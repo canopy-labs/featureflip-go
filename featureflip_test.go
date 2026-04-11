@@ -75,7 +75,7 @@ func TestNewClient_Initializes(t *testing.T) {
 	server := flagServer(flags, nil)
 	defer server.Close()
 
-	client, err := NewClient("test-sdk-key",
+	client, err := Get("test-sdk-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(5*time.Second),
@@ -109,7 +109,7 @@ func TestNewClient_EmptyKey_FallsBackToEnv(t *testing.T) {
 
 	t.Setenv("FEATUREFLIP_SDK_KEY", "env-sdk-key")
 
-	client, err := NewClient("",
+	client, err := Get("",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(5*time.Second),
@@ -127,7 +127,7 @@ func TestNewClient_EmptyKey_FallsBackToEnv(t *testing.T) {
 func TestNewClient_NoKey_ReturnsError(t *testing.T) {
 	t.Setenv("FEATUREFLIP_SDK_KEY", "")
 
-	_, err := NewClient("")
+	_, err := Get("")
 	if err == nil {
 		t.Fatal("NewClient should return error when no SDK key is provided")
 	}
@@ -151,7 +151,7 @@ func TestClient_BoolVariation(t *testing.T) {
 	server := flagServer(flags, nil)
 	defer server.Close()
 
-	client, err := NewClient("test-key",
+	client, err := Get("test-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(5*time.Second),
@@ -172,7 +172,7 @@ func TestClient_BoolVariation_FlagNotFound(t *testing.T) {
 	server := flagServer(nil, nil)
 	defer server.Close()
 
-	client, err := NewClient("test-key",
+	client, err := Get("test-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(5*time.Second),
@@ -207,7 +207,7 @@ func TestClient_StringVariation(t *testing.T) {
 	server := flagServer(flags, nil)
 	defer server.Close()
 
-	client, err := NewClient("test-key",
+	client, err := Get("test-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(5*time.Second),
@@ -242,7 +242,7 @@ func TestClient_Float64Variation(t *testing.T) {
 	server := flagServer(flags, nil)
 	defer server.Close()
 
-	client, err := NewClient("test-key",
+	client, err := Get("test-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(5*time.Second),
@@ -277,7 +277,7 @@ func TestClient_VariationDetail(t *testing.T) {
 	server := flagServer(flags, nil)
 	defer server.Close()
 
-	client, err := NewClient("test-key",
+	client, err := Get("test-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(5*time.Second),
@@ -304,7 +304,7 @@ func TestClient_VariationDetail_FlagNotFound(t *testing.T) {
 	server := flagServer(nil, nil)
 	defer server.Close()
 
-	client, err := NewClient("test-key",
+	client, err := Get("test-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(5*time.Second),
@@ -332,7 +332,7 @@ func TestClient_InitTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := NewClient("test-key",
+	_, err := Get("test-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(200*time.Millisecond),
@@ -348,7 +348,7 @@ func TestClient_Close_Idempotent(t *testing.T) {
 	server := flagServer(nil, nil)
 	defer server.Close()
 
-	client, err := NewClient("test-key",
+	client, err := Get("test-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(5*time.Second),
@@ -370,7 +370,7 @@ func TestClient_Track_NoError(t *testing.T) {
 	server := flagServer(nil, nil)
 	defer server.Close()
 
-	client, err := NewClient("test-key",
+	client, err := Get("test-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(5*time.Second),
@@ -415,7 +415,7 @@ func TestClient_EventTypes_ArePascalCase(t *testing.T) {
 	})
 	defer server.Close()
 
-	client, err := NewClient("test-key",
+	client, err := Get("test-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(5*time.Second),
@@ -471,7 +471,7 @@ func TestClient_Identify_IncludesFlagKey(t *testing.T) {
 	})
 	defer server.Close()
 
-	client, err := NewClient("test-key",
+	client, err := Get("test-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(5*time.Second),

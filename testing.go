@@ -2,12 +2,12 @@ package featureflip
 
 import (
 	"encoding/json"
-	"sync"
 	"time"
 )
 
 // ForTesting creates a Client pre-populated with the given flag overrides.
-// No network calls or background goroutines are started.
+// No network calls or background goroutines are started. The client is NOT
+// registered in the factory cache — each call returns an independent instance.
 //
 // The overrides map keys are flag keys and values are the flag values to return.
 // Supported value types: bool, string, float64/int, and any JSON-serializable type.
@@ -47,12 +47,14 @@ func ForTesting(overrides map[string]any) *Client {
 	// Create a no-op event processor (nil httpClient causes enqueue/flush to be no-ops).
 	ep := newEventProcessor(nil, 100, 30*time.Second)
 
-	return &Client{
+	core := &sharedCore{
 		store:       s,
 		ep:          ep,
 		initialized: true,
-		closeOnce:   sync.Once{},
+		refCount:    1,
 	}
+
+	return &Client{core: core}
 }
 
 // inferType returns the Featureflip flag type string for a Go value.

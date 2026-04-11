@@ -21,7 +21,7 @@ import (
 )
 
 func main() {
-	client, err := featureflip.NewClient("your-sdk-key")
+	client, err := featureflip.Get("your-sdk-key")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func main() {
 ## Configuration
 
 ```go
-client, err := featureflip.NewClient("your-sdk-key",
+client, err := featureflip.Get("your-sdk-key",
 	featureflip.WithBaseURL("https://eval.featureflip.io"),   // default
 	featureflip.WithStreaming(true),                           // default
 	featureflip.WithPollInterval(30 * time.Second),           // if streaming=false
