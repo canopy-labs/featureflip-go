@@ -38,7 +38,7 @@ func TestEvaluate_FlagDisabled(t *testing.T) {
 	flag := boolFlag("test-flag", false, "on", "off")
 	ctx := EvaluationContext{UserID: "user-1"}
 
-	result := evaluate(flag, ctx, nil)
+	result := evaluate(flag, ctx, nil, nil)
 
 	if result.Reason != ReasonFlagDisabled {
 		t.Errorf("Reason = %q, want %q", result.Reason, ReasonFlagDisabled)
@@ -55,7 +55,7 @@ func TestEvaluate_Fallthrough(t *testing.T) {
 	flag := boolFlag("test-flag", true, "on", "off")
 	ctx := EvaluationContext{UserID: "user-1"}
 
-	result := evaluate(flag, ctx, nil)
+	result := evaluate(flag, ctx, nil, nil)
 
 	if result.Reason != ReasonFallthrough {
 		t.Errorf("Reason = %q, want %q", result.Reason, ReasonFallthrough)
@@ -94,7 +94,7 @@ func TestEvaluate_RuleMatch(t *testing.T) {
 		Attributes: map[string]any{"country": "US"},
 	}
 
-	result := evaluate(flag, ctx, nil)
+	result := evaluate(flag, ctx, nil, nil)
 
 	if result.Reason != ReasonRuleMatch {
 		t.Errorf("Reason = %q, want %q", result.Reason, ReasonRuleMatch)
@@ -136,7 +136,7 @@ func TestEvaluate_RuleNoMatch_Fallthrough(t *testing.T) {
 		Attributes: map[string]any{"country": "FR"},
 	}
 
-	result := evaluate(flag, ctx, nil)
+	result := evaluate(flag, ctx, nil, nil)
 
 	if result.Reason != ReasonFallthrough {
 		t.Errorf("Reason = %q, want %q", result.Reason, ReasonFallthrough)
@@ -176,7 +176,7 @@ func TestEvaluate_SegmentRule(t *testing.T) {
 		UserID:     "user-1",
 		Attributes: map[string]any{"email": "alice@example.com"},
 	}
-	result := evaluate(flag, ctx, segments)
+	result := evaluate(flag, ctx, segments, nil)
 	if result.Reason != ReasonRuleMatch {
 		t.Errorf("Reason = %q, want %q", result.Reason, ReasonRuleMatch)
 	}
@@ -189,7 +189,7 @@ func TestEvaluate_SegmentRule(t *testing.T) {
 		UserID:     "user-2",
 		Attributes: map[string]any{"email": "bob@other.com"},
 	}
-	result2 := evaluate(flag, ctx2, segments)
+	result2 := evaluate(flag, ctx2, segments, nil)
 	if result2.Reason != ReasonFallthrough {
 		t.Errorf("Reason = %q, want %q", result2.Reason, ReasonFallthrough)
 	}
@@ -210,7 +210,7 @@ func TestEvaluate_SegmentRule_MissingSegment(t *testing.T) {
 	}
 
 	ctx := EvaluationContext{UserID: "user-1"}
-	result := evaluate(flag, ctx, map[string]segmentDTO{})
+	result := evaluate(flag, ctx, map[string]segmentDTO{}, nil)
 
 	// Missing segment means rule doesn't match
 	if result.Reason != ReasonFallthrough {
@@ -236,7 +236,7 @@ func TestEvaluate_Rollout(t *testing.T) {
 
 	for i := 0; i < n; i++ {
 		ctx := EvaluationContext{UserID: fmt.Sprintf("user-%d", i)}
-		result := evaluate(flag, ctx, nil)
+		result := evaluate(flag, ctx, nil, nil)
 		switch result.Variation {
 		case "on":
 			onCount++
@@ -299,7 +299,7 @@ func TestEvaluate_RulePriority(t *testing.T) {
 		Attributes: map[string]any{"country": "US"},
 	}
 
-	result := evaluate(flag, ctx, nil)
+	result := evaluate(flag, ctx, nil, nil)
 
 	// Lower priority number wins.
 	if result.RuleID != "rule-high-priority" {
@@ -322,7 +322,7 @@ func TestEvaluate_Rollout_DefaultBucketBy(t *testing.T) {
 	}
 
 	ctx := EvaluationContext{UserID: "user-1"}
-	result := evaluate(flag, ctx, nil)
+	result := evaluate(flag, ctx, nil, nil)
 
 	if result.Variation != "on" {
 		t.Errorf("Variation = %q, want %q", result.Variation, "on")
@@ -410,7 +410,7 @@ func TestEvaluate_MultipleRules_FirstMatchWins(t *testing.T) {
 		Attributes: map[string]any{"country": "US"},
 	}
 
-	result := evaluate(flag, ctx, nil)
+	result := evaluate(flag, ctx, nil, nil)
 
 	if result.RuleID != "rule-1" {
 		t.Errorf("RuleID = %q, want %q (first match should win)", result.RuleID, "rule-1")

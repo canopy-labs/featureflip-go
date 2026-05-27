@@ -209,7 +209,7 @@ func (sc *sharedCore) evaluateFlag(key string, ctx EvaluationContext, defaultVal
 		}
 	}
 
-	detail := evaluate(flag, ctx, sc.store.allSegments())
+	detail := evaluate(flag, ctx, sc.store.allSegments(), sc.store.allFlags())
 
 	sc.ep.enqueue(sdkEvent{
 		Type:      "Evaluation",

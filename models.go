@@ -10,14 +10,24 @@ type getFlagsResponse struct {
 }
 
 type flagDTO struct {
-	Key          string         `json:"key"`
-	Version      int            `json:"version"`
-	Type         string         `json:"type"`
-	Enabled      bool           `json:"enabled"`
-	Variations   []variationDTO `json:"variations"`
-	Rules        []ruleDTO      `json:"rules"`
-	Fallthrough  serveConfig    `json:"fallthrough"`
-	OffVariation string         `json:"offVariation"`
+	Key           string         `json:"key"`
+	Version       int            `json:"version"`
+	Type          string         `json:"type"`
+	Enabled       bool           `json:"enabled"`
+	Variations    []variationDTO `json:"variations"`
+	Rules         []ruleDTO      `json:"rules"`
+	Fallthrough   serveConfig    `json:"fallthrough"`
+	OffVariation  string         `json:"offVariation"`
+	Prerequisites []prerequisite `json:"prerequisites,omitempty"`
+}
+
+// prerequisite gates this flag's evaluation on another flag serving a specific
+// variation. If the prerequisite fails (missing, disabled, or serves a different
+// variation), this flag short-circuits to its off variation with
+// [ReasonPrerequisiteFailed].
+type prerequisite struct {
+	PrerequisiteFlagKey  string `json:"prerequisiteFlagKey"`
+	ExpectedVariationKey string `json:"expectedVariationKey"`
 }
 
 type variationDTO struct {
@@ -75,19 +85,24 @@ type EvaluationContext struct {
 type EvaluationReason string
 
 const (
-	ReasonRuleMatch    EvaluationReason = "RuleMatch"
-	ReasonFallthrough  EvaluationReason = "Fallthrough"
-	ReasonFlagDisabled EvaluationReason = "FlagDisabled"
-	ReasonFlagNotFound EvaluationReason = "FlagNotFound"
-	ReasonError        EvaluationReason = "Error"
+	ReasonRuleMatch          EvaluationReason = "RuleMatch"
+	ReasonFallthrough        EvaluationReason = "Fallthrough"
+	ReasonFlagDisabled       EvaluationReason = "FlagDisabled"
+	ReasonFlagNotFound       EvaluationReason = "FlagNotFound"
+	ReasonError              EvaluationReason = "Error"
+	ReasonPrerequisiteFailed EvaluationReason = "PrerequisiteFailed"
 )
 
 // EvaluationDetail contains the result of a flag evaluation with metadata.
+//
+// PrerequisiteKey is set only when Reason is [ReasonPrerequisiteFailed]; it
+// names the prerequisite flag that did not serve its expected variation.
 type EvaluationDetail struct {
-	Value     any
-	Variation string
-	Reason    EvaluationReason
-	RuleID    string
+	Value           any
+	Variation       string
+	Reason          EvaluationReason
+	RuleID          string
+	PrerequisiteKey string
 }
 
 type sdkEvent struct {

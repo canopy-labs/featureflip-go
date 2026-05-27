@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Prerequisite flag support. Flag evaluation now resolves prerequisites before applying rules: a flag whose prerequisite is missing, disabled, or serves an unexpected variation short-circuits to its off variation with `ReasonPrerequisiteFailed`, and `EvaluationDetail.PrerequisiteKey` carries the failing prerequisite's flag key. The resolution depth is capped at 10 (returning `ReasonError` beyond that). Mirrors the algorithm in the .NET evaluator and the JS, Python, C#, and Java SDKs.
+
 ## 2.0.0 — 2026-04-09
 
 ### BREAKING

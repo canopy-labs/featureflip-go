@@ -80,3 +80,16 @@ func (s *store) allSegments() map[string]segmentDTO {
 	}
 	return result
 }
+
+// allFlags returns a copy of all flags in the store. Used by the evaluator
+// to resolve prerequisites.
+func (s *store) allFlags() map[string]flagDTO {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make(map[string]flagDTO, len(s.flags))
+	for k, v := range s.flags {
+		result[k] = v
+	}
+	return result
+}
