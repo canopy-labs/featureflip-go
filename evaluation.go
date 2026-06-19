@@ -127,7 +127,7 @@ func evaluateInternal(flag flagDTO, ctx EvaluationContext, segments map[string]s
 		}
 
 		if matched {
-			variationKey := resolveServe(rule.Serve, ctx, flag.Key)
+			variationKey := resolveServe(rule.Serve, ctx)
 			val := resolveVariationValue(flag.Variations, variationKey)
 			result := EvaluationDetail{
 				Value:     val,
@@ -141,7 +141,7 @@ func evaluateInternal(flag flagDTO, ctx EvaluationContext, segments map[string]s
 	}
 
 	// No rules matched — fallthrough.
-	variationKey := resolveServe(flag.Fallthrough, ctx, flag.Key)
+	variationKey := resolveServe(flag.Fallthrough, ctx)
 	val := resolveVariationValue(flag.Variations, variationKey)
 	result := EvaluationDetail{
 		Value:     val,
@@ -155,10 +155,18 @@ func evaluateInternal(flag flagDTO, ctx EvaluationContext, segments map[string]s
 // resolveServe determines which variation key to serve based on the serve config.
 // For Fixed serve type, it returns the configured variation key directly.
 // For Rollout serve type, it uses deterministic bucketing.
-// flagKey is used as a fallback salt when serve.Salt is empty, matching
-// the behavior of the C# and Java SDKs.
-func resolveServe(serve serveConfig, ctx EvaluationContext, flagKey string) string {
+// Rollout bucketing uses serve.Salt directly (empty when absent), matching the
+// engine and all SDKs (#1452).
+func resolveServe(serve serveConfig, ctx EvaluationContext) string {
 	if serve.Type == "Fixed" {
+		return serve.Variation
+	}
+
+	// A Rollout serve can arrive with no weighted variations — env-level PercentageRollout
+	// has nowhere to store per-variation weights, so the mapper emits Type=Rollout with no
+	// variations (#1469). Degrade to the default fixed variation instead of returning an empty
+	// key. Mirrors the engine + C#/Java SDK evaluators.
+	if len(serve.Variations) == 0 {
 		return serve.Variation
 	}
 
@@ -169,11 +177,17 @@ func resolveServe(serve serveConfig, ctx EvaluationContext, flagKey string) stri
 	}
 
 	value, _ := getAttributeValue(ctx, bucketBy)
-	salt := serve.Salt
-	if salt == "" {
-		salt = flagKey
+
+	// Keyless user contexts can't be bucketed. Rather than hashing the empty value
+	// into an arbitrary salt-dependent bucket, serve the control (first) variation
+	// deterministically. The engine assigns a random GUID per eval (spreading
+	// anonymous users over HTTP); local SDK eval is deterministic, so parity is
+	// guaranteed only for keyed contexts (#1457).
+	if value == "" && (bucketBy == "userId" || bucketBy == "user_id") && len(serve.Variations) > 0 {
+		return serve.Variations[0].Key
 	}
-	b := bucket(salt, value)
+
+	b := bucket(serve.Salt, value)
 
 	cumulative := 0
 	for _, wv := range serve.Variations {
@@ -183,12 +197,10 @@ func resolveServe(serve serveConfig, ctx EvaluationContext, flagKey string) stri
 		}
 	}
 
-	// Fallback: return last variation if bucket falls through
-	// (should not happen with correct weights summing to 100).
-	if len(serve.Variations) > 0 {
-		return serve.Variations[len(serve.Variations)-1].Key
-	}
-	return ""
+	// Fallback: return last variation if bucket falls through (should not happen with correct
+	// weights summing to 100). serve.Variations is guaranteed non-empty — the no-variations case
+	// returned the default above.
+	return serve.Variations[len(serve.Variations)-1].Key
 }
 
 // resolveVariationValue finds a variation by key and unmarshals its JSON value.

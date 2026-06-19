@@ -329,6 +329,61 @@ func TestEvaluate_Rollout_DefaultBucketBy(t *testing.T) {
 	}
 }
 
+func TestEvaluate_Rollout_NoVariations_ServesDefault(t *testing.T) {
+	// Env-level PercentageRollout emits a Rollout serve with its default variation set but
+	// no weighted variations (no per-variation weight storage at the env level, #1469).
+	// Degrade to the default variation instead of returning an empty key. Mirrors the
+	// engine + C#/Java SDK evaluators.
+	flag := boolFlag("rollout-flag", true, "on", "off")
+	flag.Fallthrough = serveConfig{
+		Type:      "Rollout",
+		BucketBy:  "userId",
+		Variation: "off",
+		// Variations intentionally nil
+	}
+
+	ctx := EvaluationContext{UserID: "user-1"}
+	result := evaluate(flag, ctx, nil, nil)
+
+	if result.Variation != "off" {
+		t.Errorf("Variation = %q, want %q", result.Variation, "off")
+	}
+	if result.Value != false {
+		t.Errorf("Value = %v, want false", result.Value)
+	}
+}
+
+func TestEvaluate_Rollout_KeylessContext_ServesControl(t *testing.T) {
+	// A keyless/anonymous context (no userId/user_id) can't be bucketed.
+	// Rather than hashing the empty value into an arbitrary salt-dependent
+	// bucket ("collapse"), the SDK serves the control (first) variation
+	// deterministically (#1457). The thin control weight (1) means the old
+	// empty-hash behaviour would almost never land on "on", so this fails pre-fix.
+	flag := boolFlag("rollout-flag", true, "on", "off")
+	flag.Fallthrough = serveConfig{
+		Type:     "Rollout",
+		BucketBy: "userId",
+		Salt:     "test-salt",
+		Variations: []weightedVariation{
+			{Key: "on", Weight: 1},
+			{Key: "off", Weight: 99},
+		},
+	}
+
+	// Keyless context: no UserID, no attributes.
+	ctx := EvaluationContext{}
+
+	for i := 0; i < 20; i++ {
+		result := evaluate(flag, ctx, nil, nil)
+		if result.Variation != "on" {
+			t.Fatalf("iteration %d: Variation = %q, want %q (control should be served for keyless context)", i, result.Variation, "on")
+		}
+		if result.Value != true {
+			t.Fatalf("iteration %d: Value = %v, want true", i, result.Value)
+		}
+	}
+}
+
 func TestResolveVariationValue_NotFound(t *testing.T) {
 	variations := []variationDTO{
 		{Key: "on", Value: mustJSON(true)},
@@ -371,6 +426,34 @@ func TestResolveVariationValue_JSONObject(t *testing.T) {
 	}
 	if m["theme"] != "dark" {
 		t.Errorf("theme = %v, want %q", m["theme"], "dark")
+	}
+}
+
+func TestEvaluate_Rollout_EmptySalt_UsesEmptyNotFlagKey(t *testing.T) {
+	// Absent salt (zero value "") must hash as "" — the engine's behavior —
+	// not the flag key. Pre-fix the SDK substitutes flagKey, so the served
+	// variation diverges from bucket("", uid) for some users.
+	flag := boolFlag("rollout-flag", true, "on", "off")
+	flag.Fallthrough = serveConfig{
+		Type:     "Rollout",
+		BucketBy: "userId",
+		Variations: []weightedVariation{
+			{Key: "on", Weight: 50},
+			{Key: "off", Weight: 50},
+		},
+	} // no Salt -> ""
+
+	for i := 0; i < 50; i++ {
+		uid := fmt.Sprintf("user-%d", i)
+		ctx := EvaluationContext{UserID: uid}
+		got := evaluate(flag, ctx, nil, nil).Variation
+		want := "off"
+		if bucket("", uid) < 50 {
+			want = "on"
+		}
+		if got != want {
+			t.Errorf("user %s: got %q, want %q (bucket(\"\",uid)=%d)", uid, got, want, bucket("", uid))
+		}
 	}
 }
 
