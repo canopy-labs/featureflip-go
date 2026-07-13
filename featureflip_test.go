@@ -324,6 +324,10 @@ func TestClient_VariationDetail_FlagNotFound(t *testing.T) {
 	}
 }
 
+// TestClient_InitTimeout verifies the non-terminal initial-fetch contract
+// (GAP-2): an initial fetch that times out at cold start must NOT fail Get —
+// the client still initializes in a degraded-but-recovering state, serving
+// caller defaults until the data source (started regardless) self-heals.
 func TestClient_InitTimeout(t *testing.T) {
 	// Server that sleeps longer than the init timeout.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -332,15 +336,25 @@ func TestClient_InitTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := Get("test-key",
+	client, err := Get("test-key",
 		WithBaseURL(server.URL),
 		WithStreaming(false),
 		WithInitTimeout(200*time.Millisecond),
 		WithConnectTimeout(100*time.Millisecond),
 		WithReadTimeout(100*time.Millisecond),
 	)
-	if err == nil {
-		t.Fatal("NewClient should return error on init timeout")
+	if err != nil {
+		t.Fatalf("Get should not return an error on init timeout (non-terminal init): %v", err)
+	}
+	defer client.Close()
+
+	if !client.Initialized() {
+		t.Error("client should be initialized even when the initial fetch timed out (degraded-but-recovering)")
+	}
+
+	// No flags loaded yet — evaluation should serve the caller's default.
+	if v := client.BoolVariation("test-flag", EvaluationContext{}, true); !v {
+		t.Error("BoolVariation should serve the default value while degraded after an init timeout")
 	}
 }
 

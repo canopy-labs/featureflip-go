@@ -4,11 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,38 +23,58 @@ func (e *streamStatusError) Error() string {
 	return fmt.Sprintf("featureflip: stream: unexpected status %d", e.statusCode)
 }
 
+// maxSSELineSize caps a single SSE line. The eval-api emits the entire config
+// snapshot as one `data:` line (SdkController.WriteSnapshotDirectAsync), and that
+// snapshot is the first event on connect — so bufio.Scanner's 64 KiB default cap
+// silently freezes the whole stream for any environment whose config serializes
+// past it. Grow the ceiling generously to fit a large environment's config while
+// still bounding memory against a runaway (newline-less) line. The polling
+// fallback (json.Decoder, no line limit) backstops any config that would still
+// exceed this.
+const maxSSELineSize = 16 * 1024 * 1024 // 16 MiB
+
 // streamSource connects to the evaluation API's SSE stream and updates the
 // store in real time when flags or segments change.
 type streamSource struct {
-	hc             *httpClient
-	store          *store
-	onUpdate       func(key string)
-	ctx            context.Context
-	cancel         context.CancelFunc
-	reconnectDelay time.Duration
-	connectTimeout time.Duration
+	hc                *httpClient
+	store             *store
+	onUpdate          func(key string)
+	ctx               context.Context
+	cancel            context.CancelFunc
+	reconnectDelay    time.Duration // base backoff delay
+	maxReconnectDelay time.Duration // backoff ceiling
+	fallbackThreshold int           // consecutive failures before polling fallback (Task 4)
+	connectTimeout    time.Duration
+	fallbackMu        sync.Mutex  // guards fallbackPoll (run()'s goroutine vs. stop() racing concurrently)
+	fallbackPoll      *pollSource // active polling fallback, nil when none (Task 4)
 }
 
 // newStreamSource creates a new SSE stream source.
 func newStreamSource(hc *httpClient, store *store, onUpdate func(key string)) *streamSource {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &streamSource{
-		hc:             hc,
-		store:          store,
-		onUpdate:       onUpdate,
-		ctx:            ctx,
-		cancel:         cancel,
-		reconnectDelay: 3 * time.Second,
-		connectTimeout: 5 * time.Second,
+		hc:                hc,
+		store:             store,
+		onUpdate:          onUpdate,
+		ctx:               ctx,
+		cancel:            cancel,
+		reconnectDelay:    3 * time.Second,
+		maxReconnectDelay: 30 * time.Second,
+		fallbackThreshold: 5,
+		connectTimeout:    5 * time.Second,
 	}
 }
 
-// run starts the SSE connection loop. On disconnect, it waits reconnectDelay
-// then reconnects. Runs until stop() is called. Permanent errors (4xx) stop
-// retrying; transient errors (5xx) continue with the reconnect delay.
+// run starts the SSE connection loop. It reconnects forever with capped
+// exponential backoff and NEVER gives up while the source is alive — a 4xx
+// (including 401/403) is treated as transient, not terminal, because during an
+// outage it is indistinguishable from a real revocation and going dark would
+// require a customer restart. After fallbackThreshold consecutive failures it
+// also starts a polling fallback (see startFallbackPolling). Runs until stop().
 func (ss *streamSource) run() {
+	consecutiveFailures := 0
 	for {
-		err := ss.connect()
+		reached, _ := ss.connect()
 
 		select {
 		case <-ss.ctx.Done():
@@ -61,62 +82,97 @@ func (ss *streamSource) run() {
 		default:
 		}
 
-		// Stop retrying on permanent client errors (4xx).
-		if isPermanentError(err) {
-			return
+		if reached {
+			// The stream delivered at least one event (even if it then dropped):
+			// a genuine recovery. A bare 200 that delivered nothing is NOT counted
+			// here, so a silent/broken stream still arms the polling fallback.
+			consecutiveFailures = 0
+			ss.stopFallbackPolling()
+		} else {
+			consecutiveFailures++
+			if consecutiveFailures >= ss.fallbackThreshold {
+				ss.startFallbackPolling()
+			}
 		}
 
-		// Wait before reconnecting.
 		select {
 		case <-ss.ctx.Done():
 			return
-		case <-time.After(ss.reconnectDelay):
+		case <-time.After(ss.backoffDelay(consecutiveFailures)):
 		}
 	}
 }
 
-// isPermanentError returns true if the error indicates a non-retryable HTTP
-// status code (4xx range), excluding 408 and 429 which are transient.
-func isPermanentError(err error) bool {
-	var se *streamStatusError
-	if errors.As(err, &se) {
-		if se.statusCode == http.StatusRequestTimeout || se.statusCode == http.StatusTooManyRequests {
-			return false
-		}
-		return se.statusCode >= 400 && se.statusCode < 500
+// backoffDelay returns the base delay for a healthy reconnect (failures<=1) and
+// exponentially increasing, jittered delay up to maxReconnectDelay otherwise.
+func (ss *streamSource) backoffDelay(failures int) time.Duration {
+	if failures <= 1 {
+		return ss.reconnectDelay
 	}
-	return false
+	d := ss.reconnectDelay
+	for i := 1; i < failures; i++ {
+		d *= 2
+		// `d <= 0` guards against int64 overflow if maxReconnectDelay is ever
+		// wired to config and set high enough that doubling wraps negative —
+		// which would otherwise busy-loop the reconnect on a negative delay.
+		if d <= 0 || d >= ss.maxReconnectDelay {
+			return withJitter(ss.maxReconnectDelay)
+		}
+	}
+	return withJitter(d)
+}
+
+// withJitter returns a value in [d/2, d] to de-correlate reconnects across many
+// SDK instances (thundering-herd avoidance after a shared outage).
+func withJitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	half := int64(d / 2)
+	return time.Duration(half + rand.Int63n(half+1))
 }
 
 // connect opens a single SSE connection and reads events until the connection
-// closes or the context is cancelled. Returns an error for non-2xx responses
-// so the caller can decide whether to retry.
-func (ss *streamSource) connect() error {
+// closes or the context is cancelled. reached reports whether the stream was
+// live AND actually delivered at least one event frame (the `sync` snapshot, a
+// delta, or a ping) — NOT merely that a 200 was received. run() uses it to
+// decide backoff/fallback state, so a stream that returns 200 but delivers
+// nothing (a dead proxy, or a snapshot too large to read) counts as a failure
+// and lets the polling fallback arm, rather than resetting the failure counter
+// forever. The bool is independent of whether an error also occurred (e.g. a
+// read error after events were already delivered).
+func (ss *streamSource) connect() (reached bool, err error) {
 	req, err := ss.hc.newStreamRequest()
 	if err != nil {
-		return err
+		return false, err
 	}
 	req = req.WithContext(ss.ctx)
 
 	client := ss.hc.streamHTTPClient(ss.connectTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return &streamStatusError{statusCode: resp.StatusCode}
+		return false, &streamStatusError{statusCode: resp.StatusCode}
 	}
 
+	// 200 OK: we have a live stream — the server also sends a `sync` snapshot
+	// as its first event (see handleEvent). Read events until close/cancel.
 	scanner := bufio.NewScanner(resp.Body)
+	// The connect-time snapshot arrives as a single (potentially large) `data:`
+	// line; lift the default 64 KiB token cap so it doesn't choke the stream.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
 	var eventType, data string
+	delivered := false
 
 	for scanner.Scan() {
 		select {
 		case <-ss.ctx.Done():
-			return nil
+			return delivered, nil
 		default:
 		}
 
@@ -125,17 +181,30 @@ func (ss *streamSource) connect() error {
 		if strings.HasPrefix(line, "event: ") {
 			eventType = strings.TrimPrefix(line, "event: ")
 		} else if strings.HasPrefix(line, "data: ") {
-			data = strings.TrimPrefix(line, "data: ")
+			// SSE spec: multiple data: lines in one event are joined with "\n".
+			// The server currently sends a single line, but a chunked snapshot
+			// would arrive as several — overwriting would silently drop all but
+			// the last, corrupting the payload.
+			chunk := strings.TrimPrefix(line, "data: ")
+			if data == "" {
+				data = chunk
+			} else {
+				data += "\n" + chunk
+			}
 		} else if line == "" {
 			// Empty line = end of event.
 			if eventType != "" && data != "" {
 				ss.handleEvent(eventType, data)
+				// A complete event frame proves the stream is genuinely alive and
+				// delivering (this includes server pings), so it counts as a real
+				// recovery for run()'s fallback bookkeeping.
+				delivered = true
 			}
 			eventType = ""
 			data = ""
 		}
 	}
-	return scanner.Err()
+	return delivered, scanner.Err()
 }
 
 // handleEvent processes a single SSE event based on its type.
@@ -180,10 +249,52 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 		if ss.onUpdate != nil {
 			ss.onUpdate("")
 		}
+
+	case "sync":
+		// Full config snapshot sent by the server on (re)connect. Replace the
+		// entire store so flags changed — or deleted — during a disconnect are
+		// re-synced. Full replace, never merge (mirrors polling + segment.updated).
+		var resp getFlagsResponse
+		if err := json.Unmarshal([]byte(data), &resp); err != nil {
+			return
+		}
+		ss.store.setAll(resp.Flags, resp.Segments)
+		if ss.onUpdate != nil {
+			ss.onUpdate("")
+		}
 	}
 }
 
-// stop cancels the SSE connection and stops the reconnection loop.
+// startFallbackPolling begins periodic full-config polling alongside stream
+// retries, so a persistently-broken stream still gets corrective full
+// re-fetches. Idempotent — a poller runs at most once.
+func (ss *streamSource) startFallbackPolling() {
+	ss.fallbackMu.Lock()
+	defer ss.fallbackMu.Unlock()
+	// Bail if already running, OR if stop() has begun (cancel() runs before
+	// stopFallbackPolling(), so a non-nil ctx.Err() means a post-stop start
+	// would leak a poller nobody ever stops — its context is not ss.ctx).
+	if ss.fallbackPoll != nil || ss.ctx.Err() != nil {
+		return
+	}
+	// Poll at the base reconnect interval (tests use sub-second; prod ~3s).
+	ps := newPollSource(ss.hc, ss.store, ss.reconnectDelay)
+	go ps.run()
+	ss.fallbackPoll = ps
+}
+
+// stopFallbackPolling stops the polling fallback if one is running.
+func (ss *streamSource) stopFallbackPolling() {
+	ss.fallbackMu.Lock()
+	defer ss.fallbackMu.Unlock()
+	if ss.fallbackPoll != nil {
+		ss.fallbackPoll.stop()
+		ss.fallbackPoll = nil
+	}
+}
+
+// stop cancels the SSE connection, the reconnection loop, and any polling fallback.
 func (ss *streamSource) stop() {
 	ss.cancel()
+	ss.stopFallbackPolling()
 }

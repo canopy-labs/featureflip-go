@@ -2,7 +2,6 @@ package featureflip
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -60,7 +59,10 @@ func (sc *sharedCore) initializeOnce() error {
 }
 
 func (sc *sharedCore) doInit() error {
-	// Initial fetch with timeout.
+	// Best-effort initial fetch. On failure (e.g. eval-api down at cold start)
+	// we still start the data source below, so the client self-heals once the
+	// service is reachable — serving caller defaults meanwhile, never "defaults
+	// forever". Mirrors the C# SDK's always-running refresh loop.
 	type fetchResult struct {
 		resp *getFlagsResponse
 		err  error
@@ -76,18 +78,17 @@ func (sc *sharedCore) doInit() error {
 
 	select {
 	case result := <-ch:
-		if result.err != nil {
-			return fmt.Errorf("featureflip: initial fetch failed: %w", result.err)
+		if result.err == nil {
+			sc.store.setAll(result.resp.Flags, result.resp.Segments)
 		}
-		sc.store.setAll(result.resp.Flags, result.resp.Segments)
+		// On error: leave the store empty; the data source populates it on recovery.
 	case <-ctx.Done():
-		return fmt.Errorf("featureflip: initial fetch timed out after %s", sc.cfg.initTimeout)
+		// Initial fetch timed out; proceed — the data source keeps trying.
 	}
 
-	// Start event processor.
+	// Start event processor + data source UNCONDITIONALLY so a cold start during
+	// an outage recovers automatically.
 	sc.ep.start()
-
-	// Start streaming or polling.
 	if sc.cfg.streaming {
 		ss := newStreamSource(sc.hc, sc.store, nil)
 		ss.connectTimeout = sc.cfg.connectTimeout
