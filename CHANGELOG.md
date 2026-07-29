@@ -1,10 +1,46 @@
 # Changelog
 
-## Unreleased
+## 2.4.0 — 2026-07-29
 
 ### Added
 
-- Prerequisite flag support. Flag evaluation now resolves prerequisites before applying rules: a flag whose prerequisite is missing, disabled, or serves an unexpected variation short-circuits to its off variation with `ReasonPrerequisiteFailed`, and `EvaluationDetail.PrerequisiteKey` carries the failing prerequisite's flag key. The resolution depth is capped at 10 (returning `ReasonError` beyond that). Mirrors the algorithm in the .NET evaluator and the JS, Python, C#, and Java SDKs.
+- **`onEvaluation` inspector callback.** `Config.Inspectors` registers in-process observers fired on every evaluation (#1914).
+
+### Fixed
+
+- A served variation key the flag does not define now reports `ReasonError` with the caller's default, instead of a misleading success reason (#1989).
+
+## 2.3.0 — 2026-07-13
+
+### Fixed
+
+- Outage-recovery hardening: never give up reconnecting, and re-sync on recovery (#1857, #1896).
+- The SSE scanner buffer cap is lifted so a `sync` snapshot larger than 64 KiB no longer freezes the stream (#1890).
+
+## 2.2.0 — 2026-06-19
+
+### Added
+
+- **Semantic-version condition operators** (`SemverEquals`, `SemverGreaterThan`, `SemverGreaterThanOrEqual`, `SemverLessThan`, `SemverLessThanOrEqual`) for local rule evaluation, comparing per semver precedence rather than as decimals (#1431).
+
+### Fixed
+
+- Per-flag rollout salt aligns bucketing with the engine and every other SDK; the previous `flagKey` fallback re-bucketed users (#1452).
+- Relational operators match against **any** supplied condition value (#1443).
+- `MatchesRegex` is case-sensitive — the pattern is no longer compiled with the `(?i)` flag (#1453).
+- Semver prerelease comparison is case-sensitive in ASCII order per semver §11 (#1447).
+- `Before`/`After` date operators aligned with the engine (#1455).
+- Type-aware numeric coercion for `Equals`/`In` (#1458).
+- Keyless rollouts serve the control variation deterministically (#1457).
+- A present-but-nil attribute is treated as missing rather than an empty string (#1484).
+- The `bucketBy` `userId`/`user_id` alias is matched case-sensitively, aligning with the engine (#1460).
+- Environment-level percentage rollouts with no variations no longer panic (#1469).
+
+## 2.1.0 — 2026-05-27
+
+### Added
+
+- Prerequisite flag support. Flag evaluation now resolves prerequisites before applying rules: a flag whose prerequisite is missing, disabled, or serves an unexpected variation short-circuits to its off variation with `ReasonPrerequisiteFailed`, and `EvaluationDetail.PrerequisiteKey` carries the failing prerequisite's flag key. The resolution depth is capped at 10 (returning `ReasonError` beyond that). Mirrors the algorithm in the .NET evaluator and the JS, Python, C#, and Java SDKs (#1111).
 
 ## 2.0.0 — 2026-04-09
 

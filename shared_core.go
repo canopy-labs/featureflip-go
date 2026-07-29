@@ -25,6 +25,11 @@ type sharedCore struct {
 	stopStream  func()
 	stopPoll    func()
 
+	// inspectors is written once in newSharedCore, before the core is published
+	// to any other goroutine, and is never mutated afterwards — so the
+	// evaluation hot path reads it without synchronization.
+	inspectors []EvaluationInspector
+
 	refCount int32 // accessed via atomic operations
 	shutDown int32 // 0 = alive, 1 = shut down (CAS guard)
 
@@ -39,12 +44,15 @@ type sharedCore struct {
 func newSharedCore(sdkKey string, cfg config) *sharedCore {
 	hc := newHTTPClient(sdkKey, cfg)
 	return &sharedCore{
-		cfg:      cfg,
-		sdkKey:   sdkKey,
-		store:    newStore(),
-		hc:       hc,
-		ep:       newEventProcessor(hc, cfg.flushBatchSize, cfg.flushInterval),
-		refCount: 1, // first handle
+		cfg:    cfg,
+		sdkKey: sdkKey,
+		store:  newStore(),
+		hc:     hc,
+		ep:     newEventProcessor(hc, cfg.flushBatchSize, cfg.flushInterval),
+		// Copied + nil-filtered here so the config slice the caller still holds
+		// can't be mutated into the read path later.
+		inspectors: filterInspectors(cfg.inspectors),
+		refCount:   1, // first handle
 	}
 }
 
@@ -172,7 +180,9 @@ func (sc *sharedCore) isShutDown() bool {
 }
 
 // configsEqual compares the fields that matter for the "options differ on
-// repeat Get()" warning. sdkKey is excluded (it is the cache key itself).
+// repeat Get()" warning. sdkKey is excluded (it is the cache key itself), and
+// so are inspectors — funcs are not comparable, and a differing callback must
+// not spuriously trigger the warning.
 func configsEqual(a, b config) bool {
 	return a.baseURL == b.baseURL &&
 		a.streaming == b.streaming &&

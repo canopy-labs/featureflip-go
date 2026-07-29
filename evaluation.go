@@ -217,3 +217,16 @@ func resolveVariationValue(variations []variationDTO, key string) any {
 	}
 	return nil
 }
+
+// variationExists reports whether the flag defines a variation with the given
+// key. Used to tell "the served key is not defined" (malformed config -> Error)
+// apart from "the variation exists but its JSON value is null" — resolveVariationValue
+// returns nil for both, so a nil value alone cannot distinguish them.
+func variationExists(variations []variationDTO, key string) bool {
+	for _, v := range variations {
+		if v.Key == key {
+			return true
+		}
+	}
+	return false
+}

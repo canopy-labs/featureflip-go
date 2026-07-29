@@ -112,49 +112,80 @@ func Get(sdkKey string, opts ...Option) (*Client, error) {
 }
 
 // BoolVariation evaluates a boolean feature flag. Returns defaultValue if the
-// flag is not found or an error occurs.
+// flag is not found, an error occurs, or the served value is not a bool.
+//
+// Registered evaluation inspectors fire exactly once, after the type coercion
+// below, so the event's Value is exactly the value returned here.
 func (c *Client) BoolVariation(key string, ctx EvaluationContext, defaultValue bool) bool {
 	detail := c.core.evaluateFlag(key, ctx, defaultValue)
+	value := defaultValue
 	if v, ok := detail.Value.(bool); ok {
-		return v
+		value = v
 	}
-	return defaultValue
+	// detail is a value copy; rewriting Value here cannot affect the store or
+	// the caller — it only makes the inspector event report what we return.
+	detail.Value = value
+	c.core.notifyInspectors(key, ctx, detail)
+	return value
 }
 
 // StringVariation evaluates a string feature flag. Returns defaultValue if the
-// flag is not found or an error occurs.
+// flag is not found, an error occurs, or the served value is not a string.
+//
+// Registered evaluation inspectors fire exactly once, after the type coercion
+// below, so the event's Value is exactly the value returned here.
 func (c *Client) StringVariation(key string, ctx EvaluationContext, defaultValue string) string {
 	detail := c.core.evaluateFlag(key, ctx, defaultValue)
+	value := defaultValue
 	if v, ok := detail.Value.(string); ok {
-		return v
+		value = v
 	}
-	return defaultValue
+	detail.Value = value
+	c.core.notifyInspectors(key, ctx, detail)
+	return value
 }
 
-// Float64Variation evaluates a numeric feature flag. Returns defaultValue if the
-// flag is not found or an error occurs.
+// Float64Variation evaluates a numeric feature flag. Returns defaultValue if
+// the flag is not found, an error occurs, or the served value is not a number.
+//
+// Registered evaluation inspectors fire exactly once, after the type coercion
+// below, so the event's Value is exactly the value returned here.
 func (c *Client) Float64Variation(key string, ctx EvaluationContext, defaultValue float64) float64 {
 	detail := c.core.evaluateFlag(key, ctx, defaultValue)
+	value := defaultValue
 	if v, ok := detail.Value.(float64); ok {
-		return v
+		value = v
 	}
-	return defaultValue
+	detail.Value = value
+	c.core.notifyInspectors(key, ctx, detail)
+	return value
 }
 
 // JSONVariation evaluates a JSON feature flag. Returns defaultValue if the
 // flag is not found or an error occurs.
+//
+// Registered evaluation inspectors fire exactly once, with the value returned
+// here.
 func (c *Client) JSONVariation(key string, ctx EvaluationContext, defaultValue any) any {
 	detail := c.core.evaluateFlag(key, ctx, defaultValue)
+	value := detail.Value
 	if detail.Reason == ReasonFlagNotFound {
-		return defaultValue
+		value = defaultValue
 	}
-	return detail.Value
+	detail.Value = value
+	c.core.notifyInspectors(key, ctx, detail)
+	return value
 }
 
 // VariationDetail evaluates a feature flag and returns detailed evaluation
 // information including the reason for the result.
+//
+// No typed coercion applies here — the whole detail is returned — so registered
+// evaluation inspectors fire exactly once with the detail's own value.
 func (c *Client) VariationDetail(key string, ctx EvaluationContext, defaultValue any) EvaluationDetail {
-	return c.core.evaluateFlag(key, ctx, defaultValue)
+	detail := c.core.evaluateFlag(key, ctx, defaultValue)
+	c.core.notifyInspectors(key, ctx, detail)
+	return detail
 }
 
 // Track records a custom event for analytics.
@@ -199,7 +230,19 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// evaluateFlag is the core evaluation method on sharedCore.
+// evaluateFlag is the core evaluation method on sharedCore — the single choke
+// point every BoolVariation/StringVariation/Float64Variation/JSONVariation/
+// VariationDetail call funnels through.
+//
+// It deliberately does NOT notify evaluation inspectors: the typed accessors
+// coerce this detail's value (substituting their default on a type mismatch),
+// so only they know the value the caller actually receives. Each public
+// variation method calls [sharedCore.notifyInspectors] itself, exactly once,
+// after coercion — and none of them delegates to another, so no call can
+// double-fire. The evaluator itself is total (it never panics for a well-formed
+// store), so its error case — a prerequisite chain deeper than
+// maxPrerequisiteDepth, or an error bubbling up from a prerequisite — arrives
+// as a normal return carrying [ReasonError] and is notified like any other.
 func (sc *sharedCore) evaluateFlag(key string, ctx EvaluationContext, defaultValue any) EvaluationDetail {
 	flag, ok := sc.store.getFlag(key)
 	if !ok {
@@ -210,6 +253,15 @@ func (sc *sharedCore) evaluateFlag(key string, ctx EvaluationContext, defaultVal
 	}
 
 	detail := evaluate(flag, ctx, sc.store.allSegments(), sc.store.allFlags())
+
+	// Malformed config: the evaluator selected a variation key the flag does not
+	// define (e.g. a fallthrough/rule naming a since-deleted variation). Report
+	// Error, mirroring the engine's ServeVariation + the C#/Java SDKs (#1989). A
+	// variation that genuinely exists with a null JSON value is NOT this case —
+	// hence the key-existence check rather than a nil-value check.
+	if detail.Variation != "" && !variationExists(flag.Variations, detail.Variation) {
+		detail.Reason = ReasonError
+	}
 
 	sc.ep.enqueue(sdkEvent{
 		Type:      "Evaluation",

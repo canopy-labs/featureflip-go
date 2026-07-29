@@ -11,6 +11,7 @@ type config struct {
 	initTimeout    time.Duration
 	connectTimeout time.Duration
 	readTimeout    time.Duration
+	inspectors     []EvaluationInspector
 }
 
 func defaultConfig() config {
@@ -52,3 +53,14 @@ func WithConnectTimeout(d time.Duration) Option { return func(c *config) { c.con
 
 // WithReadTimeout sets the timeout for reading HTTP responses.
 func WithReadTimeout(d time.Duration) Option { return func(c *config) { c.readTimeout = d } }
+
+// WithInspectors registers [EvaluationInspector] callbacks that observe every
+// flag evaluation in-process, synchronously. May be called more than once;
+// inspectors accumulate. Nil entries are dropped.
+//
+// Like every other option, inspectors are honored only on the first [Get] for a
+// given SDK key — the cached shared core's inspectors are preserved and a later
+// Get's inspectors are ignored.
+func WithInspectors(inspectors ...EvaluationInspector) Option {
+	return func(c *config) { c.inspectors = append(c.inspectors, inspectors...) }
+}
