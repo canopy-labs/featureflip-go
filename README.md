@@ -5,7 +5,7 @@ Go SDK for [Featureflip](https://featureflip.io) - evaluate feature flags locall
 ## Installation
 
 ```bash
-go get github.com/canopy-labs/featureflip-go
+go get github.com/canopy-labs/featureflip-go/v2
 ```
 
 ## Quick Start
@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"log"
 
-	featureflip "github.com/canopy-labs/featureflip-go"
+	featureflip "github.com/canopy-labs/featureflip-go/v2"
 )
 
 func main() {

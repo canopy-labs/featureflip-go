@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.4.1 — 2026-08-02
+
+### Fixed
+
+- The module path carries its major-version suffix: `github.com/canopy-labs/featureflip-go/v2`. Go requires this of any v2+ module, and without it the proxy rejected every v2 tag — `go get` kept resolving to v1.0.1 and nothing released since 2.0.0 was installable. Update imports to `featureflip "github.com/canopy-labs/featureflip-go/v2"`; the v1 line is unaffected and keeps resolving as before (#2138).
+
 ## 2.4.0 — 2026-07-29
 
 ### Added
