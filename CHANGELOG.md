@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.4.2 — 2026-08-02
+
+### Fixed
+
+- The `User-Agent` reports the SDK's real version. It had been pinned to `0.1.0` since the first release, so every request from a 2.x client identified itself as pre-1.0 (#2141).
+
 ## 2.4.1 — 2026-08-02
 
 ### Fixed
