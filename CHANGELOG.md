@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.4.4 — 2026-08-05
+
+### Fixed
+
+- `LICENSE` is now the verbatim Apache-2.0 text. Three phrases in the operative sections had been reworded and the appendix dropped, which left automated license scanners unable to identify it — pkg.go.dev reported `License: UNKNOWN` and withheld the entire package documentation. The license itself is unchanged; the file now says what it always claimed to.
+
 ## 2.4.3 — 2026-08-05
 
 ### Changed

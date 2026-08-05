@@ -14,7 +14,7 @@ import (
 // sdkVersion is reported in the User-Agent. Go modules carry no manifest — the
 // git tag is the version — so this is maintained by hand and pinned to
 // CHANGELOG.md by tools/check-sdk-versions. Bump both together.
-const sdkVersion = "2.4.3"
+const sdkVersion = "2.4.4"
 
 // httpClient wraps stdlib net/http for communication with the evaluation API.
 type httpClient struct {
