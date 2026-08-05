@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.4.3 — 2026-08-05
+
+### Changed
+
+- The package documentation on pkg.go.dev now links out to featureflip.io and the Go SDK guide, and says up front that evaluation happens in-process.
+
 ## 2.4.2 — 2026-08-02
 
 ### Fixed

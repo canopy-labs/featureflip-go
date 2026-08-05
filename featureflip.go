@@ -1,8 +1,18 @@
-// Package featureflip provides a Go SDK for Featureflip feature flag evaluation.
+// Package featureflip provides a Go SDK for [Featureflip] feature flag evaluation.
+//
+// Flag rules are fetched once and evaluated in-process, so a variation call
+// costs no network round trip. Changes arrive over a server-sent-events stream,
+// with polling as a fallback.
 //
 // Obtain a client via the package-level [Get] function. Multiple Get calls with
 // the same SDK key return handles sharing one underlying shared core
 // (refcounted); the shared core shuts down when the last handle is closed.
+//
+// The [Go SDK guide] covers targeting rules, segments, and event tracking with
+// worked examples; the reference below documents the surface itself.
+//
+// [Featureflip]: https://featureflip.io
+// [Go SDK guide]: https://featureflip.io/docs/sdks/go/
 package featureflip
 
 import (
