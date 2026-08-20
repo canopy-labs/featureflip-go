@@ -121,20 +121,51 @@ func Get(sdkKey string, opts ...Option) (*Client, error) {
 	}
 }
 
+// isClosed reports whether this handle has been closed.
+//
+// Close() releases the core — stopping streaming/polling and shutting down the
+// event processor — but the in-memory store stays readable, so an unguarded
+// handle would keep serving a frozen snapshot that can never update again while
+// still reporting itself initialized (#2289). Every public accessor consults
+// this so a closed handle degrades to the caller's default, matching the
+// contract the Python and PHP SDKs already implement.
+func (c *Client) isClosed() bool {
+	return atomic.LoadInt32(&c.disposed) != 0
+}
+
+// narrow asserts detail.Value to the type the calling accessor requires.
+//
+// On a mismatch the caller's default is substituted AND the reason is rewritten
+// to [ReasonError], so a type-mismatched read is detectable instead of looking
+// like a healthy serve (#2281). Substituting the value without the reason — the
+// prior behaviour — meant a caller reading a string flag through
+// [Client.BoolVariation] silently got their default back under ReasonFallthrough.
+//
+// Paths that never served a value are unaffected: flag-not-found already carries
+// the caller's default, so its assertion succeeds and ReasonFlagNotFound stands.
+func narrow[T any](detail *EvaluationDetail, defaultValue T) T {
+	value, ok := detail.Value.(T)
+	if !ok {
+		value = defaultValue
+		detail.Reason = ReasonError
+	}
+	detail.Value = value
+	return value
+}
+
 // BoolVariation evaluates a boolean feature flag. Returns defaultValue if the
 // flag is not found, an error occurs, or the served value is not a bool.
 //
 // Registered evaluation inspectors fire exactly once, after the type coercion
 // below, so the event's Value is exactly the value returned here.
 func (c *Client) BoolVariation(key string, ctx EvaluationContext, defaultValue bool) bool {
-	detail := c.core.evaluateFlag(key, ctx, defaultValue)
-	value := defaultValue
-	if v, ok := detail.Value.(bool); ok {
-		value = v
+	if c.isClosed() {
+		return defaultValue
 	}
-	// detail is a value copy; rewriting Value here cannot affect the store or
-	// the caller — it only makes the inspector event report what we return.
-	detail.Value = value
+	detail := c.core.evaluateFlag(key, ctx, defaultValue)
+	// detail is a value copy; rewriting it here cannot affect the store or the
+	// caller — it only makes the inspector event report what we return.
+	value := narrow(&detail, defaultValue)
 	c.core.notifyInspectors(key, ctx, detail)
 	return value
 }
@@ -145,12 +176,13 @@ func (c *Client) BoolVariation(key string, ctx EvaluationContext, defaultValue b
 // Registered evaluation inspectors fire exactly once, after the type coercion
 // below, so the event's Value is exactly the value returned here.
 func (c *Client) StringVariation(key string, ctx EvaluationContext, defaultValue string) string {
-	detail := c.core.evaluateFlag(key, ctx, defaultValue)
-	value := defaultValue
-	if v, ok := detail.Value.(string); ok {
-		value = v
+	if c.isClosed() {
+		return defaultValue
 	}
-	detail.Value = value
+	detail := c.core.evaluateFlag(key, ctx, defaultValue)
+	// detail is a value copy; rewriting it here cannot affect the store or the
+	// caller — it only makes the inspector event report what we return.
+	value := narrow(&detail, defaultValue)
 	c.core.notifyInspectors(key, ctx, detail)
 	return value
 }
@@ -161,12 +193,13 @@ func (c *Client) StringVariation(key string, ctx EvaluationContext, defaultValue
 // Registered evaluation inspectors fire exactly once, after the type coercion
 // below, so the event's Value is exactly the value returned here.
 func (c *Client) Float64Variation(key string, ctx EvaluationContext, defaultValue float64) float64 {
-	detail := c.core.evaluateFlag(key, ctx, defaultValue)
-	value := defaultValue
-	if v, ok := detail.Value.(float64); ok {
-		value = v
+	if c.isClosed() {
+		return defaultValue
 	}
-	detail.Value = value
+	detail := c.core.evaluateFlag(key, ctx, defaultValue)
+	// detail is a value copy; rewriting it here cannot affect the store or the
+	// caller — it only makes the inspector event report what we return.
+	value := narrow(&detail, defaultValue)
 	c.core.notifyInspectors(key, ctx, detail)
 	return value
 }
@@ -177,6 +210,9 @@ func (c *Client) Float64Variation(key string, ctx EvaluationContext, defaultValu
 // Registered evaluation inspectors fire exactly once, with the value returned
 // here.
 func (c *Client) JSONVariation(key string, ctx EvaluationContext, defaultValue any) any {
+	if c.isClosed() {
+		return defaultValue
+	}
 	detail := c.core.evaluateFlag(key, ctx, defaultValue)
 	value := detail.Value
 	if detail.Reason == ReasonFlagNotFound {
@@ -193,6 +229,9 @@ func (c *Client) JSONVariation(key string, ctx EvaluationContext, defaultValue a
 // No typed coercion applies here — the whole detail is returned — so registered
 // evaluation inspectors fire exactly once with the detail's own value.
 func (c *Client) VariationDetail(key string, ctx EvaluationContext, defaultValue any) EvaluationDetail {
+	if c.isClosed() {
+		return EvaluationDetail{Value: defaultValue, Reason: ReasonError}
+	}
 	detail := c.core.evaluateFlag(key, ctx, defaultValue)
 	c.core.notifyInspectors(key, ctx, detail)
 	return detail
@@ -200,6 +239,9 @@ func (c *Client) VariationDetail(key string, ctx EvaluationContext, defaultValue
 
 // Track records a custom event for analytics.
 func (c *Client) Track(eventKey string, ctx EvaluationContext, metadata map[string]any) {
+	if c.isClosed() {
+		return
+	}
 	c.core.ep.enqueue(sdkEvent{
 		Type:      "Custom",
 		FlagKey:   eventKey,
@@ -211,6 +253,9 @@ func (c *Client) Track(eventKey string, ctx EvaluationContext, metadata map[stri
 
 // Identify records an identify event for user association.
 func (c *Client) Identify(ctx EvaluationContext) {
+	if c.isClosed() {
+		return
+	}
 	c.core.ep.enqueue(sdkEvent{
 		Type:      "Identify",
 		FlagKey:   "$identify",
@@ -221,11 +266,17 @@ func (c *Client) Identify(ctx EvaluationContext) {
 
 // Flush sends all buffered events to the server immediately.
 func (c *Client) Flush() {
+	if c.isClosed() {
+		return
+	}
 	c.core.ep.flush()
 }
 
 // Initialized returns true if the client successfully completed initialization.
 func (c *Client) Initialized() bool {
+	if c.isClosed() {
+		return false
+	}
 	return c.core.initialized
 }
 

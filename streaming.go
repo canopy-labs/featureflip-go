@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -255,7 +256,18 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 		// entire store so flags changed — or deleted — during a disconnect are
 		// re-synced. Full replace, never merge (mirrors polling + segment.updated).
 		var resp getFlagsResponse
+		// This error check is LOAD-BEARING, not boilerplate. encoding/json
+		// partially populates on a type error: it keeps every field it decoded and
+		// leaves the mismatched ones zero. Applying that would replace the store
+		// with flags whose Type is "", which matches neither "Fixed" nor "Rollout"
+		// — silently breaking every evaluation instead of dropping one frame. See
+		// #2288, and #2285 for the same payload silently mis-targeting the Ruby
+		// SDK, which had no such guard.
 		if err := json.Unmarshal([]byte(data), &resp); err != nil {
+			// Log it: a dropped snapshot means reconnect resync is not happening,
+			// and staying silent is how the server-side bug that produced these
+			// frames (#2279) went unnoticed for so long.
+			log.Printf("[featureflip] discarding malformed sync snapshot: %v", err)
 			return
 		}
 		ss.store.setAll(resp.Flags, resp.Segments)

@@ -478,12 +478,15 @@ func TestInspector_ValueIsPostCoercion_BoolVariationOnStringFlag(t *testing.T) {
 	if e.Value != false {
 		t.Errorf("Value = %#v, want false (the value the caller received), not the raw served value", e.Value)
 	}
-	// The rest of the event still describes the real evaluation.
+	// The rest of the event still describes the real evaluation — the flag config
+	// is healthy, the caller just asked for the wrong type.
 	if e.VariationKey != "served" {
 		t.Errorf("VariationKey = %q, want %q", e.VariationKey, "served")
 	}
-	if e.Reason != ReasonFallthrough {
-		t.Errorf("Reason = %q, want %q", e.Reason, ReasonFallthrough)
+	// ...except the reason, which reports the mismatch rather than a healthy
+	// serve, so callers can detect it (#2281). See type_mismatch_test.go.
+	if e.Reason != ReasonError {
+		t.Errorf("Reason = %q, want %q", e.Reason, ReasonError)
 	}
 }
 
@@ -656,22 +659,28 @@ func TestInspector_NoEventsAfterClose(t *testing.T) {
 		t.Fatal("core is not shut down after closing the last handle")
 	}
 
-	// Closing suppresses only the notification — the returned values are
-	// unchanged.
-	if got := client.BoolVariation("flag-on", ctx, false); got != true {
-		t.Errorf("BoolVariation after Close = %v, want true (Close must not change returned values)", got)
+	// A closed handle serves the caller's default from every accessor (#2289).
+	//
+	// This block previously asserted the opposite — "Close must not change
+	// returned values" — which pinned Go's own behaviour rather than a
+	// cross-SDK contract: Python and PHP have always degraded to the default
+	// here, because the core is shut down and the store it would read can never
+	// update again. The assertion this test actually exists for is the
+	// inspector-count one below, which is unchanged.
+	if got := client.BoolVariation("flag-on", ctx, false); got != false {
+		t.Errorf("BoolVariation after Close = %v, want false (the caller's default)", got)
 	}
-	if got := client.StringVariation("flag-string", ctx, "d"); got != "hello" {
-		t.Errorf("StringVariation after Close = %q, want %q", got, "hello")
+	if got := client.StringVariation("flag-string", ctx, "d"); got != "d" {
+		t.Errorf("StringVariation after Close = %q, want %q (the caller's default)", got, "d")
 	}
-	if got := client.Float64Variation("flag-number", ctx, 0); got != 42.5 {
-		t.Errorf("Float64Variation after Close = %v, want 42.5", got)
+	if got := client.Float64Variation("flag-number", ctx, 0); got != 0 {
+		t.Errorf("Float64Variation after Close = %v, want 0 (the caller's default)", got)
 	}
-	if got := client.JSONVariation("flag-string", ctx, nil); got != "hello" {
-		t.Errorf("JSONVariation after Close = %#v, want %q", got, "hello")
+	if got := client.JSONVariation("flag-string", ctx, nil); got != nil {
+		t.Errorf("JSONVariation after Close = %#v, want nil (the caller's default)", got)
 	}
-	if got := client.VariationDetail("flag-on", ctx, nil); got.Value != true {
-		t.Errorf("VariationDetail after Close = %#v, want true", got.Value)
+	if got := client.VariationDetail("flag-on", ctx, nil); got.Value != nil {
+		t.Errorf("VariationDetail after Close = %#v, want nil (the caller's default)", got.Value)
 	}
 	if got := client.BoolVariation("missing", ctx, true); got != true {
 		t.Errorf("BoolVariation(missing) after Close = %v, want true (the default)", got)

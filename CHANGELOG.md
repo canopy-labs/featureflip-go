@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.5.0 — 2026-08-20
+
+### Fixed
+
+- A closed handle serves the caller's default from every accessor and reports not-initialized. `Close()` releases the shared core — stopping streaming and polling, shutting down the event processor — but the in-memory store stayed readable, so a closed client kept evaluating against a frozen snapshot that could never update again while still reporting itself initialized. ([#2289](https://github.com/canopy-labs/featureflip/issues/2289))
+
+- The `sync`-snapshot unmarshal error check is pinned by a regression test. Go's `encoding/json` partially populates on a type error rather than aborting, so that `if err != nil { return }` is load-bearing: without it a malformed frame would apply a half-decoded snapshot. ([#2288](https://github.com/canopy-labs/featureflip/issues/2288))
+### Changed
+
+- A type-mismatched read returns the caller's default and reports `ReasonError`, instead of returning it under the evaluator's *success* reason, which left callers no signal at all. Reading a String flag through a number accessor, say, is now detectable rather than silent. Matching reads and the generic/JSON accessors are unchanged. ([#2281](https://github.com/canopy-labs/featureflip/issues/2281))
 ## 2.4.4 — 2026-08-05
 
 ### Fixed
