@@ -189,66 +189,79 @@ func evaluateCondition(c condition, ctx EvaluationContext) bool {
 		}
 	}
 
-	result := evaluateOperator(c.Operator, fmt.Sprintf("%v", raw), c.Values)
+	result, recognised := evaluateOperatorChecked(c.Operator, fmt.Sprintf("%v", raw), c.Values)
+
+	// Issue #2262: an unrecognised operator fails CLOSED. Letting Negate invert
+	// it would turn "I cannot evaluate this" into "matches every user", rolling
+	// the flag out to 100% of traffic. The realistic trigger is a new operator
+	// shipped server-side reaching an SDK pinned to an older version.
+	if !recognised {
+		return false
+	}
+
 	if c.Negate {
 		return !result
 	}
 	return result
 }
 
-// evaluateOperator evaluates a single operator against a value and targets.
-// All string comparisons are case-insensitive.
-func evaluateOperator(op string, value string, targets []string) bool {
+// evaluateOperatorChecked evaluates a single operator against a value and
+// targets. All string comparisons are case-insensitive.
+//
+// The second return value reports whether the operator was recognised. It is
+// false — distinct from a (false, true) non-match — for an operator this SDK
+// does not know, which callers must fail closed on rather than invert.
+func evaluateOperatorChecked(op string, value string, targets []string) (bool, bool) {
 	lower := strings.ToLower(value)
 
 	switch strings.ToLower(op) {
 	case "equals", "in":
 		for _, t := range targets {
 			if strings.ToLower(t) == lower {
-				return true
+				return true, true
 			}
 		}
-		return false
+		return false, true
 
 	case "notequals", "notin":
 		for _, t := range targets {
 			if strings.ToLower(t) == lower {
-				return false
+				return false, true
 			}
 		}
-		return true
+		return true, true
 
 	case "contains":
 		for _, t := range targets {
 			if strings.Contains(lower, strings.ToLower(t)) {
-				return true
+				return true, true
 			}
 		}
-		return false
+		return false, true
 
 	case "notcontains":
 		for _, t := range targets {
 			if strings.Contains(lower, strings.ToLower(t)) {
-				return false
+				return false, true
 			}
 		}
-		return true
+		return true, true
 
 	case "startswith":
 		for _, t := range targets {
 			if strings.HasPrefix(lower, strings.ToLower(t)) {
-				return true
+				return true, true
 			}
 		}
-		return false
+		return false, true
 
 	case "endswith":
 		for _, t := range targets {
 			if strings.HasSuffix(lower, strings.ToLower(t)) {
-				return true
+				return true, true
 			}
 		}
-		return false
+		return false, true
 
 	case "matchesregex":
 		for _, t := range targets {
@@ -262,47 +275,57 @@ func evaluateOperator(op string, value string, targets []string) bool {
 			// backtrack. An invalid pattern returns err != nil → no match.
 			matched, err := regexp.MatchString(t, value)
 			if err == nil && matched {
-				return true
+				return true, true
 			}
 		}
-		return false
+		return false, true
 
 	case "greaterthan":
-		return compareNumeric(value, targets, func(a, b float64) bool { return a > b })
+		return compareNumeric(value, targets, func(a, b float64) bool { return a > b }), true
 
 	case "lessthan":
-		return compareNumeric(value, targets, func(a, b float64) bool { return a < b })
+		return compareNumeric(value, targets, func(a, b float64) bool { return a < b }), true
 
 	case "greaterthanorequal":
-		return compareNumeric(value, targets, func(a, b float64) bool { return a >= b })
+		return compareNumeric(value, targets, func(a, b float64) bool { return a >= b }), true
 
 	case "lessthanorequal":
-		return compareNumeric(value, targets, func(a, b float64) bool { return a <= b })
+		return compareNumeric(value, targets, func(a, b float64) bool { return a <= b }), true
 
 	case "before":
-		return compareDateTime(value, targets, func(a, b time.Time) bool { return a.Before(b) })
+		return compareDateTime(value, targets, func(a, b time.Time) bool { return a.Before(b) }), true
 
 	case "after":
-		return compareDateTime(value, targets, func(a, b time.Time) bool { return a.After(b) })
+		return compareDateTime(value, targets, func(a, b time.Time) bool { return a.After(b) }), true
 
 	case "semverequals":
-		return compareSemver(value, targets, func(c int) bool { return c == 0 })
+		return compareSemver(value, targets, func(c int) bool { return c == 0 }), true
 
 	case "semvergreaterthan":
-		return compareSemver(value, targets, func(c int) bool { return c > 0 })
+		return compareSemver(value, targets, func(c int) bool { return c > 0 }), true
 
 	case "semvergreaterthanorequal":
-		return compareSemver(value, targets, func(c int) bool { return c >= 0 })
+		return compareSemver(value, targets, func(c int) bool { return c >= 0 }), true
 
 	case "semverlessthan":
-		return compareSemver(value, targets, func(c int) bool { return c < 0 })
+		return compareSemver(value, targets, func(c int) bool { return c < 0 }), true
 
 	case "semverlessthanorequal":
-		return compareSemver(value, targets, func(c int) bool { return c <= 0 })
+		return compareSemver(value, targets, func(c int) bool { return c <= 0 }), true
 
 	default:
-		return false
+		// Unrecognised operator — "cannot evaluate", not "did not match".
+		return false, false
 	}
+}
+
+// evaluateOperator reports whether value satisfies op against targets, treating
+// an unrecognised operator as a non-match. Callers that must distinguish
+// "did not match" from "cannot evaluate" — anything applying Negate — have to
+// use evaluateOperatorChecked instead (see #2262).
+func evaluateOperator(op string, value string, targets []string) bool {
+	result, _ := evaluateOperatorChecked(op, value, targets)
+	return result
 }
 
 // compareNumeric parses value as float64 and applies cmp against each target,

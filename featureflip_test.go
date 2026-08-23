@@ -472,6 +472,100 @@ func TestClient_EventTypes_ArePascalCase(t *testing.T) {
 	}
 }
 
+// Identify must forward the caller's attributes as metadata, matching the JS,
+// Python, PHP and Ruby SDKs. Before #2359 it carried the id and nothing else.
+func TestClient_Identify_ForwardsAttributesAsMetadata(t *testing.T) {
+	var mu sync.Mutex
+	var captured []sdkEvent
+
+	server := flagServer(nil, nil, flagServerOpts{
+		onEvents: func(events []sdkEvent) {
+			mu.Lock()
+			captured = append(captured, events...)
+			mu.Unlock()
+		},
+	})
+	defer server.Close()
+
+	client, err := Get("test-key",
+		WithBaseURL(server.URL),
+		WithStreaming(false),
+		WithInitTimeout(5*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewClient error: %v", err)
+	}
+
+	client.Identify(EvaluationContext{
+		UserID:     "user-1",
+		Attributes: map[string]any{"plan": "pro"},
+	})
+	client.Flush()
+	client.Close()
+
+	mu.Lock()
+	events := captured
+	mu.Unlock()
+
+	for _, e := range events {
+		if e.Type != "Identify" {
+			continue
+		}
+		if e.UserID != "user-1" {
+			t.Errorf("Identify event UserID = %q, want %q", e.UserID, "user-1")
+		}
+		if got := e.Metadata["plan"]; got != "pro" {
+			t.Errorf("Identify event Metadata[plan] = %v, want %q", got, "pro")
+		}
+		return
+	}
+	t.Error("no Identify event found")
+}
+
+// An attribute-less Identify must omit the bag entirely rather than sending an
+// empty object, so every SDK puts the same bytes on the wire.
+func TestClient_Identify_OmitsMetadataWhenNoAttributes(t *testing.T) {
+	var mu sync.Mutex
+	var captured []sdkEvent
+
+	server := flagServer(nil, nil, flagServerOpts{
+		onEvents: func(events []sdkEvent) {
+			mu.Lock()
+			captured = append(captured, events...)
+			mu.Unlock()
+		},
+	})
+	defer server.Close()
+
+	client, err := Get("test-key",
+		WithBaseURL(server.URL),
+		WithStreaming(false),
+		WithInitTimeout(5*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewClient error: %v", err)
+	}
+
+	client.Identify(EvaluationContext{UserID: "user-1"})
+	client.Flush()
+	client.Close()
+
+	mu.Lock()
+	events := captured
+	mu.Unlock()
+
+	for _, e := range events {
+		if e.Type != "Identify" {
+			continue
+		}
+		if e.Metadata != nil {
+			t.Errorf("Identify event Metadata = %v, want nil", e.Metadata)
+		}
+		return
+	}
+	t.Error("no Identify event found")
+}
+
 func TestClient_Identify_IncludesFlagKey(t *testing.T) {
 	var mu sync.Mutex
 	var captured []sdkEvent

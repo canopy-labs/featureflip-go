@@ -983,3 +983,48 @@ func TestEvaluateConditionGroups_MixedOperators(t *testing.T) {
 		t.Error("both groups match so result should be true")
 	}
 }
+
+// Issue #2262: an operator this SDK does not recognise means "I cannot evaluate
+// this", NOT "this did not match". Inverting that inability with Negate would
+// turn it into a match-everyone — a flag silently served to 100% of traffic.
+// The realistic trigger is a new operator shipped server-side reaching an SDK
+// pinned to an older version. Unrecognised operators must fail CLOSED, before
+// Negate is applied.
+//
+// Contrast evaluateCondition's missing-attribute path, which legitimately
+// returns c.Negate: absence is a determinate fact about the user, whereas an
+// unrecognised operator is not a fact about the user at all.
+func TestEvaluateCondition_UnknownOperator_FailsClosed(t *testing.T) {
+	ctx := EvaluationContext{
+		Attributes: map[string]any{"country": "US"},
+	}
+
+	for _, negate := range []bool{false, true} {
+		c := condition{
+			Attribute: "country",
+			Operator:  "SomeFutureOperator",
+			Values:    []string{"US"},
+			Negate:    negate,
+		}
+		if evaluateCondition(c, ctx) {
+			t.Errorf("unknown operator with Negate=%v matched; must fail closed", negate)
+		}
+	}
+}
+
+// The same rule has to hold when the unknown operator is the only condition in
+// a rule — this is the shape that rolls a flag out to everyone.
+func TestEvaluateConditions_UnknownOperatorNegated_DoesNotMatchAll(t *testing.T) {
+	ctx := EvaluationContext{
+		Attributes: map[string]any{"plan": "free"},
+	}
+	conds := []condition{{
+		Attribute: "plan",
+		Operator:  "SomeFutureOperator",
+		Values:    []string{"enterprise"},
+		Negate:    true,
+	}}
+	if evaluateConditions(conds, "And", ctx) {
+		t.Error("negated unknown operator matched every user; must fail closed")
+	}
+}

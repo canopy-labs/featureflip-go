@@ -2,6 +2,7 @@ package featureflip
 
 import (
 	"context"
+	"log"
 	"time"
 )
 
@@ -45,11 +46,23 @@ func (ps *pollSource) run() {
 	}
 }
 
-// poll fetches all flags and segments and updates the store. Errors are
-// silently ignored — the next poll will retry.
+// poll fetches all flags and segments and updates the store. The store is left
+// untouched on any failure, so a bad response can never partially replace good
+// config — see streaming_sync_guard_test.go for why that guard is load-bearing
+// (#2288).
 func (ps *pollSource) poll() {
 	resp, err := ps.hc.getFlags()
 	if err != nil {
+		// Only contract violations are announced. A transport failure is
+		// self-healing — the next tick retries — and logging every blip would
+		// flood the logs of a briefly-offline client. A decode failure does not
+		// self-heal: the server keeps sending the same payload, so the client
+		// serves stale config (or caller defaults) indefinitely. Staying silent
+		// about that is how the enums-as-integers server bug went unnoticed for
+		// so long (#2279); the streaming path already says so in its own words.
+		if isMalformedPayload(err) {
+			log.Printf("[featureflip] discarding malformed flags payload: %v", err)
+		}
 		return
 	}
 	ps.store.setAll(resp.Flags, resp.Segments)

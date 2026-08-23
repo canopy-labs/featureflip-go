@@ -91,7 +91,7 @@ client.Track("checkout-completed",
 	featureflip.EvaluationContext{UserID: "123"},
 	map[string]any{"total": 99.99})
 
-// Identify users for segment building
+// Record an identify event for analytics (does not affect flag evaluation)
 client.Identify(featureflip.EvaluationContext{UserID: "123"})
 
 // Force flush pending events

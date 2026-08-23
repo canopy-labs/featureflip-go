@@ -256,11 +256,15 @@ func (c *Client) Identify(ctx EvaluationContext) {
 	if c.isClosed() {
 		return
 	}
+	// The caller's attributes ride along as metadata, matching the other server
+	// SDKs. There is no alias to strip: UserID is a distinct struct field, so
+	// Attributes never carries the identity.
 	c.core.ep.enqueue(sdkEvent{
 		Type:      "Identify",
 		FlagKey:   "$identify",
 		UserID:    ctx.UserID,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Metadata:  ctx.Attributes,
 	})
 }
 

@@ -3,6 +3,7 @@ package featureflip
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,7 +15,7 @@ import (
 // sdkVersion is reported in the User-Agent. Go modules carry no manifest — the
 // git tag is the version — so this is maintained by hand and pinned to
 // CHANGELOG.md by tools/check-sdk-versions. Bump both together.
-const sdkVersion = "2.5.0"
+const sdkVersion = "2.5.1"
 
 // httpClient wraps stdlib net/http for communication with the evaluation API.
 type httpClient struct {
@@ -46,6 +47,24 @@ func newHTTPClient(sdkKey string, cfg config) *httpClient {
 func (h *httpClient) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", h.sdkKey)
 	req.Header.Set("User-Agent", "featureflip-go/"+sdkVersion)
+}
+
+// isMalformedPayload reports whether err came from decoding a response body
+// rather than from moving bytes — i.e. whether the server broke the wire
+// contract, or the network merely hiccupped.
+//
+// The distinction decides whether a caller announces the failure. A transport
+// failure self-heals on the next fetch and stays quiet; a decode failure does
+// not, because the server will send the same payload again. Every fetch here
+// wraps its decode error with %w, so the concrete json errors stay reachable
+// through errors.As.
+//
+// Deliberately narrow: a truncated body surfaces as io.ErrUnexpectedEOF, which
+// is a transport symptom, not a contract violation.
+func isMalformedPayload(err error) bool {
+	var typeErr *json.UnmarshalTypeError
+	var syntaxErr *json.SyntaxError
+	return errors.As(err, &typeErr) || errors.As(err, &syntaxErr)
 }
 
 // getFlags fetches all flag and segment configurations from the evaluation API.

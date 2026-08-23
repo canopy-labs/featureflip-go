@@ -214,6 +214,7 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 	case "flag.created", "flag.updated":
 		var evt streamEvent
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
+			log.Printf("[featureflip] discarding malformed %s event: %v", eventType, err)
 			return
 		}
 		if evt.Key == "" {
@@ -221,6 +222,12 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 		}
 		flag, err := ss.hc.getFlag(evt.Key)
 		if err != nil {
+			// Only a contract violation is announced; a transport failure is
+			// retried by the next event or the fallback poller. See
+			// isMalformedPayload.
+			if isMalformedPayload(err) {
+				log.Printf("[featureflip] discarding malformed flag payload for %q: %v", evt.Key, err)
+			}
 			return
 		}
 		ss.store.setFlag(*flag)
@@ -231,6 +238,7 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 	case "flag.deleted":
 		var evt streamEvent
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
+			log.Printf("[featureflip] discarding malformed flag.deleted event: %v", err)
 			return
 		}
 		if evt.Key == "" {
@@ -244,6 +252,11 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 	case "segment.updated":
 		resp, err := ss.hc.getFlags()
 		if err != nil {
+			// Same fetch, same split, same reasoning as pollSource.poll():
+			// a malformed refetch will not fix itself on the next event.
+			if isMalformedPayload(err) {
+				log.Printf("[featureflip] discarding malformed flags payload: %v", err)
+			}
 			return
 		}
 		ss.store.setAll(resp.Flags, resp.Segments)

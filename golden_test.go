@@ -11,7 +11,11 @@ type goldenFile struct {
 	BucketVectors    []goldenBucketVec    `json:"bucketVectors"`
 	RolloutVectors   []goldenRolloutVec   `json:"rolloutVectors"`
 	ConditionVectors []goldenConditionVec `json:"conditionVectors"`
-	FlagVectors      []json.RawMessage    `json:"flagVectors"`
+	// Hand-authored (#2262), not engine-generated — the generator resolves
+	// operators with Enum.Parse<ConditionOperator>, which throws on an
+	// unrecognised name, so these cannot exist as conditionVectors.
+	UnknownOperatorVectors []goldenConditionVec `json:"unknownOperatorVectors"`
+	FlagVectors            []json.RawMessage    `json:"flagVectors"`
 }
 
 type goldenBucketVec struct {
@@ -121,7 +125,28 @@ func TestGoldenRollouts(t *testing.T) {
 // TestGoldenConditions verifies individual condition evaluation (operator + negate)
 // by building a single-condition flag and checking whether "match" variation is served.
 func TestGoldenConditions(t *testing.T) {
-	for _, v := range loadGolden(t).ConditionVectors {
+	runConditionVectors(t, loadGolden(t).ConditionVectors)
+}
+
+// TestGoldenUnknownOperators locks the rule that an operator this SDK does not
+// recognise means "cannot evaluate", NOT "did not match" — so Negate must never
+// invert it into a match-everyone, which would serve the flag to 100% of
+// traffic (#2262). Go carries the operator as a raw string, so unlike the
+// enum-typed SDKs it can genuinely receive one of these over the wire.
+func TestGoldenUnknownOperators(t *testing.T) {
+	runConditionVectors(t, loadGolden(t).UnknownOperatorVectors)
+}
+
+// runConditionVectors builds the single-condition flag each vector describes and
+// asserts whether the "match" variation is served. Shared by the engine-generated
+// condition vectors and the hand-authored unknown-operator vectors, which have an
+// identical input shape.
+func runConditionVectors(t *testing.T, vectors []goldenConditionVec) {
+	t.Helper()
+	if len(vectors) == 0 {
+		t.Fatal("no vectors loaded")
+	}
+	for _, v := range vectors {
 		flag := flagDTO{
 			Key:     "cond",
 			Version: 1,
