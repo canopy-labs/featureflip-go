@@ -230,6 +230,16 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 			}
 			return
 		}
+		// An unevaluable enum drops the flag rather than upserting it (#2402). For a
+		// delta whose whole scope is one flag that means leaving the store's previous
+		// copy alone: replacing it with one this build would mis-evaluate is the
+		// outcome the drop exists to prevent, and FlagNotFound is the honest answer if
+		// there was no previous copy.
+		if reason := unevaluableFlagReason(*flag); reason != "" {
+			log.Printf("[featureflip] dropping flag delta for %q: %s. This SDK version "+
+				"may be older than the flag configuration.", evt.Key, reason)
+			return
+		}
 		ss.store.setFlag(*flag)
 		if ss.onUpdate != nil {
 			ss.onUpdate(evt.Key)
@@ -259,7 +269,7 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 			}
 			return
 		}
-		ss.store.setAll(resp.Flags, resp.Segments)
+		ss.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))
 		if ss.onUpdate != nil {
 			ss.onUpdate("")
 		}
@@ -283,7 +293,7 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 			log.Printf("[featureflip] discarding malformed sync snapshot: %v", err)
 			return
 		}
-		ss.store.setAll(resp.Flags, resp.Segments)
+		ss.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))
 		if ss.onUpdate != nil {
 			ss.onUpdate("")
 		}

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // getAttributeValue resolves an attribute from the evaluation context and
@@ -378,25 +379,110 @@ func compareDateTime(value string, targets []string, cmp func(a, b time.Time) bo
 // honored), offset-less date-times and plain dates (assumed UTC), and finally
 // an integer Unix timestamp in seconds since epoch. Successful parses are
 // normalized to UTC. ok is false when none of these forms apply.
+// DateTimeOffset.MinValue / MaxValue as unix seconds — the exact bounds the engine's
+// FromUnixTimeSeconds accepts before throwing (#2432).
+const (
+	minUnixSeconds = -62135596800
+	maxUnixSeconds = 253402300799
+)
+
+// operandWhitespace is the ONLY set trimmed from a date operand, and the whole of the
+// operand's permitted whitespace: U+0009..U+000D plus U+0020 -- exactly the class the
+// engine's NumberStyles.Integer accepts via AllowLeadingWhite | AllowTrailingWhite.
+//
+// strings.TrimSpace is deliberately NOT used: it trims by unicode.IsSpace, which also
+// strips U+0085, U+00A0 and every Unicode space separator, so an operand prefixed with
+// any of those was trimmed to "5" and matched here while the engine rejected it (#2468).
+const operandWhitespace = "\t\n\v\f\r "
+
+// isoOperand is the ISO-8601 grammar a date operand may use: a calendar date, optionally
+// followed by a time (seconds and fractional seconds optional) and an optional offset in
+// either extended (+05:00 / Z) or basic (+0500) form. The separator may be "T" or a
+// space, both of which the engine accepts.
+var isoOperand = regexp.MustCompile(
+	`^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$`)
+
+// hasForbiddenOperandChar reports whether s carries a character no date operand may
+// contain: a NUL or other control character, or a non-ASCII whitespace/format character.
+// An interior ASCII space is allowed -- it is the ISO-8601 date/time separator.
+func hasForbiddenOperandChar(s string) bool {
+	for _, r := range s {
+		if r == ' ' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f || unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// canonicalizeISO rewrites an accepted ISO operand into strict RFC3339 (or a bare
+// date), so a single layout parses every shape the engine accepts. Enumerating one
+// Go layout per shape would need eight, and go's layouts cannot express "seconds
+// optional" or "offset in either form" -- which is why go alone rejected
+// "2024-01-01 00:00:00", "2024-01-01T00:00" and "2024-01-01T00:00:00+0500" (#2468).
+// The second return value reports whether the operand carries an explicit offset.
+func canonicalizeISO(s string) (string, bool, bool) {
+	m := isoOperand.FindStringSubmatch(s)
+	if m == nil {
+		return "", false, false
+	}
+	date, hh, mm, ss, frac, off := m[1], m[2], m[3], m[4], m[5], m[6]
+	if hh == "" {
+		return date, false, true
+	}
+	// The engine's DateTimeOffset.TryParse rejects hour 24 outright rather than
+	// rolling it over to 00:00 the next day.
+	if hh >= "24" {
+		return "", false, false
+	}
+	if ss == "" {
+		ss = "00"
+	}
+	// Basic offset (+0500) -> extended (+05:00); RFC3339 accepts only the latter.
+	if len(off) == 5 && off != "Z" {
+		off = off[:3] + ":" + off[3:]
+	}
+	return date + "T" + hh + ":" + mm + ":" + ss + frac + off, off != "", true
+}
+
 func parseDateTime(s string) (time.Time, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" {
+	s = strings.Trim(s, operandWhitespace)
+	if s == "" || hasForbiddenOperandChar(s) {
 		return time.Time{}, false
 	}
 
-	// RFC3339 handles both an explicit offset and the "Z" UTC designator.
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.UTC(), true
-	}
-	// No-offset forms are assumed UTC, matching the engine's AssumeUniversal.
-	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02"} {
-		if t, err := time.ParseInLocation(layout, s, time.UTC); err == nil {
-			return t.UTC(), true
-		}
-	}
 	// Integer fallback: Unix time in seconds since epoch.
 	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		// Unix seconds outside DateTimeOffset's range match NOTHING rather than wrapping to a
+		// far-future instant: the engine's FromUnixTimeSeconds throws there and TryParseDateTime
+		// returns false. The case that matters in practice is a MILLISECONDS timestamp pasted
+		// where seconds belong -- Date.now()/currentTimeMillis() is the obvious way to produce
+		// one -- which would otherwise become an instant in the year 55829 and satisfy every
+		// After comparison instead of matching nothing (#2432).
+		if n < minUnixSeconds || n > maxUnixSeconds {
+			return time.Time{}, false
+		}
 		return time.Unix(n, 0).UTC(), true
+	}
+
+	canonical, hasOffset, ok := canonicalizeISO(s)
+	if !ok {
+		return time.Time{}, false
+	}
+	if hasOffset {
+		// RFC3339 honors the explicit offset and yields the absolute instant.
+		if t, err := time.Parse(time.RFC3339, canonical); err == nil {
+			return t.UTC(), true
+		}
+		return time.Time{}, false
+	}
+	// Offset-less forms are assumed UTC, matching the engine's AssumeUniversal.
+	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, canonical, time.UTC); err == nil {
+			return t.UTC(), true
+		}
 	}
 
 	return time.Time{}, false

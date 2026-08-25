@@ -19,11 +19,16 @@ import (
 // a divergence between SDKs fails a build rather than shipping — which is the whole
 // point of the class (one server bug, #2279, produced five different behaviours).
 type malformedVector struct {
-	ID          string          `json:"id"`
-	Description string          `json:"description"`
-	Kind        string          `json:"kind"`
-	Expect      string          `json:"expect"`
-	Payload     json.RawMessage `json:"payload"`
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	Kind        string `json:"kind"`
+	Expect      string `json:"expect"`
+	// dropEntity only — the entities the payload must LOSE, and the ones it must keep.
+	DropFlags    []string        `json:"dropFlags"`
+	DropSegments []string        `json:"dropSegments"`
+	KeepFlags    []string        `json:"keepFlags"`
+	KeepSegments []string        `json:"keepSegments"`
+	Payload      json.RawMessage `json:"payload"`
 }
 
 type malformedBlock struct {
@@ -87,6 +92,31 @@ func TestGoldenMalformedConfigVectors(t *testing.T) {
 				_, segOK := s.getSegment("mc-accepted")
 				if !flagOK && !segOK {
 					t.Errorf("%s: a forward-compatible payload was rejected", v.Description)
+				}
+			case "dropEntity":
+				// Neither accept nor reject: the payload APPLIES, minus the entities
+				// carrying an enum this build cannot evaluate. Both halves are asserted
+				// — "dropped" alone is satisfied by rejecting the whole payload, and
+				// "kept" alone by tolerating the bad value.
+				for _, key := range v.DropFlags {
+					if _, ok := s.getFlag(key); ok {
+						t.Errorf("%s: flag %q should have been dropped", v.Description, key)
+					}
+				}
+				for _, key := range v.DropSegments {
+					if _, ok := s.getSegment(key); ok {
+						t.Errorf("%s: segment %q should have been dropped", v.Description, key)
+					}
+				}
+				for _, key := range v.KeepFlags {
+					if _, ok := s.getFlag(key); !ok {
+						t.Errorf("%s: flag %q should have been kept", v.Description, key)
+					}
+				}
+				for _, key := range v.KeepSegments {
+					if _, ok := s.getSegment(key); !ok {
+						t.Errorf("%s: segment %q should have been kept", v.Description, key)
+					}
 				}
 			default:
 				t.Fatalf("unmapped expect %q", v.Expect)

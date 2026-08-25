@@ -65,7 +65,7 @@ func (ps *pollSource) poll() {
 		}
 		return
 	}
-	ps.store.setAll(resp.Flags, resp.Segments)
+	ps.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))
 }
 
 // stop cancels the polling loop.

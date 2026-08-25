@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.6.1 — 2026-08-24
+
+### Fixed
+
+- A date operand is now trimmed of exactly the whitespace the evaluation engine trims (tab, newline, vertical tab, form feed, carriage return and space), and is rejected outright if it still carries a NUL, another control character, or a non-ASCII whitespace character. Each SDK had been relying on its own language's `trim`, and no two of those cover the same set, so the same operand could match on one SDK and match nothing on another. ([#2468](https://github.com/canopy-labs/featureflip/issues/2468))
+- A date operand written with a space separator (`2024-01-01 00:00:00`), without seconds (`2024-01-01T00:00`), or with a basic offset (`+0500`) now parses. All three are accepted by the engine and were previously matching nothing here. ([#2468](https://github.com/canopy-labs/featureflip/issues/2468))
+
+## 2.6.0 — 2026-08-24
+
+### Fixed
+
+- Analytics events now survive a transient failure of the events endpoint. The buffer is swapped out before the batch is sent and the send error was explicitly discarded, so any non-2xx or network error dropped that batch outright — and the public edge answers this endpoint with a 503 at a low but constant rate, so evaluation analytics were being lost steadily. A retryable failure (5xx, 429, transport fault, timeout) returns the batch to the front of the buffer for the next flush; a permanent one (401/403/400, or a batch that cannot be encoded) still drops it, because retrying a rejected SDK key forever would starve every later event. ([#2456](https://github.com/canopy-labs/featureflip/issues/2456))
+- Every failed flush is now logged. The send error was discarded without a word, so a rejected batch was indistinguishable from a delivered one — no log, no counter, nothing to diagnose the loss from. ([#2456](https://github.com/canopy-labs/featureflip/issues/2456))
+- `Close()` no longer risks hanging while the events endpoint is down: shutdown makes one final flush attempt and discards whatever it cannot deliver, rather than holding a re-queued batch nothing will drain. ([#2456](https://github.com/canopy-labs/featureflip/issues/2456))
+
+### Changed
+
+- The event buffer is bounded at 10,000 events, shedding the oldest and logging how many were dropped. Only reachable during a sustained outage, when re-queued batches would otherwise accumulate without limit; shedding oldest-first keeps the freshest analytics and drops the stale re-queued batches rather than starving new events. ([#2456](https://github.com/canopy-labs/featureflip/issues/2456))
+- A batch-size-triggered flush now stands down for one flush interval after a retryable failure, and never runs concurrently with itself. A re-queued batch leaves the buffer at or above the batch size, so without this every subsequent tracked event would start another flush — one request per event against an endpoint already failing. Explicit `Flush()` calls and the periodic flush are unaffected, and the periodic flush remains the retry vehicle. ([#2456](https://github.com/canopy-labs/featureflip/issues/2456))
+- A flush now sends at most one batch per request, looping until the buffer is empty, instead of posting the whole buffer at once. That only became reachable once failed batches started being re-queued: before, a failure emptied the buffer, so it never grew far past the batch size. After a sustained outage it can sit at the 10,000-event bound, and a body carrying all of that risks a 413 — which is non-retryable, so the entire backlog would have been dropped by the very path added to preserve it. A batch the server rejects permanently is dropped and the loop moves on, so one bad batch cannot block the backlog behind it. ([#2456](https://github.com/canopy-labs/featureflip/issues/2456))
+
 ## 2.5.1 — 2026-08-23
 
 ### Fixed

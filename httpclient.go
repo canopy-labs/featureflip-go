@@ -15,7 +15,7 @@ import (
 // sdkVersion is reported in the User-Agent. Go modules carry no manifest — the
 // git tag is the version — so this is maintained by hand and pinned to
 // CHANGELOG.md by tools/check-sdk-versions. Bump both together.
-const sdkVersion = "2.5.1"
+const sdkVersion = "2.6.1"
 
 // httpClient wraps stdlib net/http for communication with the evaluation API.
 type httpClient struct {
@@ -65,6 +65,60 @@ func isMalformedPayload(err error) bool {
 	var typeErr *json.UnmarshalTypeError
 	var syntaxErr *json.SyntaxError
 	return errors.As(err, &typeErr) || errors.As(err, &syntaxErr)
+}
+
+// eventSendError reports that the events endpoint answered a flush with a
+// non-2xx status.
+//
+// The status has to survive the return from postEvents so the flush path can
+// tell a retryable failure from a permanent one (#2456) — a bare
+// fmt.Errorf("... status %d") would force the caller to string-match, which is
+// exactly the coupling errors.As exists to avoid.
+type eventSendError struct {
+	statusCode int
+}
+
+func (e *eventSendError) Error() string {
+	return fmt.Sprintf("featureflip: post events: unexpected status %d", e.statusCode)
+}
+
+// retryable reports whether the same batch could succeed if sent again: any 5xx
+// (the production edge answers this endpoint with a 503 at a low constant rate
+// — #2456) and 429, where the server is explicitly asking the caller to come
+// back later.
+func (e *eventSendError) retryable() bool {
+	return e.statusCode >= 500 || e.statusCode == 429
+}
+
+// isRetryableSendFailure reports whether a failed event flush could plausibly
+// succeed if the same batch were sent again.
+//
+// Anything that reached the wire and came back as an HTTP answer is decided by
+// the status. Everything else is treated as transient: a failure out of
+// http.Client.Do is a transport fault (DNS, TLS, connection reset) or a
+// timeout, and a later flush may well get past it.
+//
+// The one non-HTTP failure that is NOT transient is an encode failure. A batch
+// whose caller-supplied metadata carries a func, a channel or a NaN will fail
+// to marshal identically every time, so re-queueing it would pin it at the
+// front of the buffer forever and starve every later event — the same reason a
+// 401 is dropped rather than retried.
+func isRetryableSendFailure(err error) bool {
+	var sendErr *eventSendError
+	if errors.As(err, &sendErr) {
+		return sendErr.retryable()
+	}
+
+	var unsupportedType *json.UnsupportedTypeError
+	var unsupportedValue *json.UnsupportedValueError
+	var marshalerErr *json.MarshalerError
+	if errors.As(err, &unsupportedType) ||
+		errors.As(err, &unsupportedValue) ||
+		errors.As(err, &marshalerErr) {
+		return false
+	}
+
+	return true
 }
 
 // getFlags fetches all flag and segment configurations from the evaluation API.
@@ -143,7 +197,8 @@ func (h *httpClient) postEvents(events []sdkEvent) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("featureflip: post events: unexpected status %d", resp.StatusCode)
+		io.Copy(io.Discard, resp.Body)
+		return &eventSendError{statusCode: resp.StatusCode}
 	}
 
 	return nil
