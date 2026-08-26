@@ -716,3 +716,35 @@ func TestBackoffDelay_DoesNotOverflowToNegative(t *testing.T) {
 		}
 	}
 }
+
+func TestBackoffDelay_JittersTheFirstReconnect(t *testing.T) {
+	// The drops this backoff absorbs are fleet-wide: one edge event severs every
+	// stream at once (#2457 — measured at a 2.5-3.0ms spread across both eval-api
+	// pods), so every client re-enters here at failures == 0 together. A constant
+	// here republishes the drop's own synchronisation as a reconnect spike one base
+	// delay later, observed in prod as a 26-46ms reconnect spread 3.1s after the
+	// drop (#2508).
+	ss := &streamSource{
+		reconnectDelay:    3 * time.Second,
+		maxReconnectDelay: 30 * time.Second,
+	}
+	half := ss.reconnectDelay / 2
+
+	seen := make(map[time.Duration]struct{})
+	for i := 0; i < 200; i++ {
+		for _, failures := range []int{0, 1} {
+			d := ss.backoffDelay(failures)
+			if d < half || d > ss.reconnectDelay {
+				t.Fatalf("backoffDelay(%d) = %v, want within [%v, %v]", failures, d, half, ss.reconnectDelay)
+			}
+			if d <= 0 {
+				t.Fatalf("backoffDelay(%d) = %v, want strictly positive (anti-busy-loop)", failures, d)
+			}
+			seen[d] = struct{}{}
+		}
+	}
+
+	if len(seen) <= 1 {
+		t.Fatalf("first-reconnect delay is deterministic (%d distinct value(s)) — a fleet-wide drop reconnects in lockstep", len(seen))
+	}
+}

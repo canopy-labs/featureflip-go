@@ -46,6 +46,18 @@ type eventProcessor struct {
 	// starts a concurrent flush per event. Guarded by mu.
 	autoFlushInFlight bool
 
+	// drainDone is non-nil while a drain loop is running and is closed when it
+	// finishes, so a concurrent flush can wait for it instead of starting a
+	// second one.
+	//
+	// autoFlushInFlight above only ever guarded the SIZE trigger. Nothing stopped
+	// the interval tick, an explicit Client.Flush and a size-triggered flush from
+	// entering the loop together — two request streams against the endpoint the
+	// backoff gate exists to protect, and a success in one clearing the gate a
+	// failure in the other had just armed, which re-opens the one-request-per-event
+	// behaviour outright (#2477). Guarded by mu.
+	drainDone chan struct{}
+
 	stopCh chan struct{}
 	done   chan struct{}
 }
@@ -162,7 +174,40 @@ func (ep *eventProcessor) autoFlush() {
 // thousand events at once risks a body the server rejects outright — a 413 is
 // non-retryable, so the whole backlog would be dropped by the very path meant
 // to preserve it.
+//
+// At most one drain loop runs at a time. A caller that arrives while one is
+// already going waits for it and returns — it does NOT start its own and it does
+// NOT return early, because a caller that asked for a flush is asking for its
+// events to be sent, and handing back before the send settled would be a promise
+// the SDK had not kept. This matches the js/node SDKs, whose flush() has always
+// returned the in-flight promise.
 func (ep *eventProcessor) flush() {
+	if ep.hc == nil {
+		return
+	}
+
+	ep.mu.Lock()
+	if done := ep.drainDone; done != nil {
+		ep.mu.Unlock()
+		<-done
+		return
+	}
+	done := make(chan struct{})
+	ep.drainDone = done
+	ep.mu.Unlock()
+
+	defer func() {
+		ep.mu.Lock()
+		ep.drainDone = nil
+		ep.mu.Unlock()
+		close(done)
+	}()
+
+	ep.drain()
+}
+
+// drain is the loop itself, callable when coalescing must be bypassed.
+func (ep *eventProcessor) drain() {
 	if ep.hc == nil {
 		return
 	}
@@ -328,9 +373,16 @@ func (ep *eventProcessor) stop() {
 		<-done
 	}
 
+	// drain, not flush: shutdown must never be the call that gets coalesced away.
+	// If a periodic drain happens to be in flight, flush would wait for it and
+	// return, and anything enqueued after that loop's last look at the buffer
+	// would be discarded unsent. Running two drains concurrently is safe here
+	// precisely because closed is already set, so neither can re-queue and there
+	// is no backoff left to disarm.
+	//
 	// closed is already set, so a retryable failure here reports the batch as
 	// dropped instead of re-queueing it into a buffer nobody will drain.
-	ep.flush()
+	ep.drain()
 
 	ep.mu.Lock()
 	ep.buf = nil

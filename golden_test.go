@@ -15,7 +15,10 @@ type goldenFile struct {
 	// operators with Enum.Parse<ConditionOperator>, which throws on an
 	// unrecognised name, so these cannot exist as conditionVectors.
 	UnknownOperatorVectors []goldenConditionVec `json:"unknownOperatorVectors"`
-	FlagVectors            []json.RawMessage    `json:"flagVectors"`
+	// Hand-authored (#2480), not engine-generated -- the engine deliberately
+	// ACCEPTS the non-ISO formats these assert every SDK must reject.
+	DateGrammarVectors []goldenConditionVec `json:"dateGrammarVectors"`
+	FlagVectors        []json.RawMessage    `json:"flagVectors"`
 }
 
 type goldenBucketVec struct {
@@ -135,6 +138,18 @@ func TestGoldenConditions(t *testing.T) {
 // enum-typed SDKs it can genuinely receive one of these over the wire.
 func TestGoldenUnknownOperators(t *testing.T) {
 	runConditionVectors(t, loadGolden(t).UnknownOperatorVectors)
+}
+
+// Hand-authored because the ENGINE DISSENTS: DateTimeOffset.TryParse under the
+// invariant culture resolves "05/15/2023", "Jan 1 2024" and "2024.01.01", so
+// generating these would assert the opposite of what every SDK must do (#2480).
+// The engine keeps that leniency deliberately -- narrowing it would stop an
+// already-saved operand from evaluating -- and Management rejects them on write.
+// The six SDKs that always rejected these did so as a SIDE EFFECT of their
+// grammar and not one of them asserted it, which is how js came to resolve a
+// non-ISO operand in the host's timezone unnoticed.
+func TestGoldenDateGrammar(t *testing.T) {
+	runConditionVectors(t, loadGolden(t).DateGrammarVectors)
 }
 
 // runConditionVectors builds the single-condition flag each vector describes and

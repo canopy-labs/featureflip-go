@@ -104,11 +104,19 @@ func (ss *streamSource) run() {
 	}
 }
 
-// backoffDelay returns the base delay for a healthy reconnect (failures<=1) and
-// exponentially increasing, jittered delay up to maxReconnectDelay otherwise.
+// backoffDelay returns a jittered delay for every reconnect: [base/2, base] for a
+// healthy reconnect (failures<=1), then exponentially increasing up to
+// maxReconnectDelay, each level jittered.
+//
+// Jittering the FIRST reconnect is load-bearing, not cosmetic. The drops this
+// absorbs are fleet-wide — one edge event severs every stream at once (#2457) — so
+// every client re-enters here at failures == 0 together. A constant there replayed
+// the drop's own synchronisation as a reconnect spike one base delay later (#2508).
+// withJitter keeps the delay strictly positive, so a clean EOF still cannot
+// busy-loop.
 func (ss *streamSource) backoffDelay(failures int) time.Duration {
 	if failures <= 1 {
-		return ss.reconnectDelay
+		return withJitter(ss.reconnectDelay)
 	}
 	d := ss.reconnectDelay
 	for i := 1; i < failures; i++ {

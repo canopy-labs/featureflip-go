@@ -474,18 +474,45 @@ func parseDateTime(s string) (time.Time, bool) {
 	if hasOffset {
 		// RFC3339 honors the explicit offset and yields the absolute instant.
 		if t, err := time.Parse(time.RFC3339, canonical); err == nil {
-			return t.UTC(), true
+			return inDateTimeOffsetRange(t.UTC())
 		}
 		return time.Time{}, false
 	}
 	// Offset-less forms are assumed UTC, matching the engine's AssumeUniversal.
 	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02"} {
 		if t, err := time.ParseInLocation(layout, canonical, time.UTC); err == nil {
-			return t.UTC(), true
+			return inDateTimeOffsetRange(t.UTC())
 		}
 	}
 
 	return time.Time{}, false
+}
+
+// inDateTimeOffsetRange applies the SAME bounds the integer branch of parseDateTime
+// already enforces to an instant resolved from the ISO branch.
+//
+// The engine parses with DateTimeOffset.TryParse, so its accepted set is bounded by
+// DateTimeOffset's range -- 0001-01-01T00:00:00Z to 9999-12-31T23:59:59.9999999Z --
+// and it returns false outside it. go, js, ruby, php and java all resolve past both
+// ends instead: year 0 to a real instant, and a 4-digit year plus an offset to one
+// beyond either bound, since the offset moves the instant while the grammar only
+// constrains the written year (#2500).
+//
+// Checked on the RESOLVED instant, deliberately unlike the written-triple calendar
+// check the three rollover SDKs needed in #2491. The two answer different questions:
+// whether the operand names a real DAY is a property of what was written, whereas
+// whether it is REPRESENTABLE is a property of what it resolves to -- and the offset
+// is exactly what carries "0001-01-01T00:00:00+05:00" under the floor and
+// "9999-12-31T23:59:59-05:00" over the ceiling.
+//
+// Unix() floors, matching the other SDKs: a fractional second is always a
+// non-negative addend, so "0000-12-31T23:59:59.5Z" floors to MIN-1 and is rejected
+// while "0001-01-01T00:00:00.5Z" floors to MIN and is kept.
+func inDateTimeOffsetRange(t time.Time) (time.Time, bool) {
+	if s := t.Unix(); s < minUnixSeconds || s > maxUnixSeconds {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // semverVersion is a parsed semantic version: the release core as dot-separated
