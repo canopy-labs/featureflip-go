@@ -37,6 +37,14 @@ var (
 type Client struct {
 	core     *sharedCore
 	disposed int32 // 0 = alive, 1 = disposed (per-handle)
+
+	// subsMu guards unsubs, the flag-update subscriptions registered through
+	// THIS handle. They are dropped when this handle closes, even though the
+	// shared core may outlive it — a listener registered through a closed
+	// handle firing on a sibling's stream would be a leak the caller has no
+	// way to stop.
+	subsMu sync.Mutex
+	unsubs []func()
 }
 
 // Get returns a client for the given SDK key. The first call with a given key
@@ -290,9 +298,72 @@ func (c *Client) Initialized() bool {
 // same handle is a no-op.
 func (c *Client) Close() error {
 	if atomic.CompareAndSwapInt32(&c.disposed, 0, 1) {
+		// Drop this handle's subscriptions before releasing the core: the core
+		// may survive (another handle holds it), and its data sources keep
+		// running, so a listener left registered would go on firing for a
+		// client the caller has already closed.
+		c.subsMu.Lock()
+		unsubs := c.unsubs
+		c.unsubs = nil
+		c.subsMu.Unlock()
+		for _, unsub := range unsubs {
+			unsub()
+		}
+
 		c.core.release()
 	}
 	return nil
+}
+
+// OnUpdate subscribes to flag-configuration changes.
+//
+// The listener is called with the flag keys whose configuration changed,
+// batched into one call per update. It fires on the SDK's streaming or polling
+// goroutine, so it must not block: a slow listener delays flag delivery and, on
+// the SSE path, can stall the connection.
+//
+// The initial flag load does NOT fire — a cold start is not a change. Only
+// later updates do. Keys are reported when a flag is added, removed or
+// modified, and additionally for flags dragged along by the change: those
+// referencing an edited segment, and those depending on a changed flag through
+// a prerequisite (their evaluated value moves even though their own
+// configuration did not).
+//
+// A panic in a listener is logged and swallowed; it does not affect flag
+// delivery or the other listeners.
+//
+// The returned func unsubscribes and is idempotent. Subscriptions are also
+// dropped when this handle is closed, so a caller that closes its client need
+// not unsubscribe first.
+//
+// Example:
+//
+//	unsubscribe := client.OnUpdate(func(keys []string) {
+//		log.Printf("flags changed: %v", keys)
+//	})
+//	defer unsubscribe()
+func (c *Client) OnUpdate(listener FlagUpdateListener) func() {
+	noop := func() {}
+	if listener == nil {
+		return noop
+	}
+	// Nothing will ever fire for a closed handle, so hand back a no-op rather
+	// than registering a listener on a core this handle no longer participates
+	// in.
+	if c.isClosed() {
+		return noop
+	}
+
+	unsub := c.core.addUpdateListener(listener)
+
+	var once sync.Once
+	idempotent := func() { once.Do(unsub) }
+
+	c.subsMu.Lock()
+	c.unsubs = append(c.unsubs, idempotent)
+	c.subsMu.Unlock()
+
+	return idempotent
 }
 
 // evaluateFlag is the core evaluation method on sharedCore — the single choke

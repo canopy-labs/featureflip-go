@@ -12,17 +12,22 @@ type pollSource struct {
 	hc       *httpClient
 	store    *store
 	interval time.Duration
+	// onUpdate is called with the changed flag keys after a poll that actually
+	// moved something. Nil in the fallback-poller path only while no core owns
+	// it; every production construction passes one.
+	onUpdate func(keys []string)
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
 
 // newPollSource creates a new polling data source.
-func newPollSource(hc *httpClient, store *store, interval time.Duration) *pollSource {
+func newPollSource(hc *httpClient, store *store, interval time.Duration, onUpdate func(keys []string)) *pollSource {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &pollSource{
 		hc:       hc,
 		store:    store,
 		interval: interval,
+		onUpdate: onUpdate,
 		ctx:      ctx,
 		cancel:   cancel,
 	}
@@ -65,7 +70,10 @@ func (ps *pollSource) poll() {
 		}
 		return
 	}
-	ps.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))
+	changed := ps.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))
+	if len(changed) > 0 && ps.onUpdate != nil {
+		ps.onUpdate(changed)
+	}
 }
 
 // stop cancels the polling loop.

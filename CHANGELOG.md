@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.8.0 — 2026-09-06
+
+### Added
+
+- `Client.OnUpdate` subscribes to flag-configuration changes. The listener is called with the flag keys whose configuration changed, batched into one call per update, and the returned func unsubscribes; subscriptions are also dropped when the handle that registered them is closed. This is what an OpenFeature provider needs in order to emit `PROVIDER_CONFIGURATION_CHANGED`, which the Go provider shipped without. ([#2767](https://github.com/canopy-labs/featureflip/issues/2767))
+
+- The reported key set covers more than the flags whose own rows moved, matching the js and Python SDKs. A **segment** edit changes evaluated outcomes without bumping any flag's version, so the flags referencing that segment are pulled in; and a flag's version covers its own prerequisite rows but not the flags they point at, so every transitive **prerequisite dependent** is pulled in too — its value really does flip, to its off variation with `PrerequisiteFailed`, while its own configuration is untouched.
+
+- The initial flag load does not fire, and neither does a snapshot that changed nothing. The store is handed a full snapshot on every poll tick and every SSE `sync` reconnect, so notifying on each would report "everything changed" once per poll interval rather than reporting changes.
+
+### Fixed
+
+- The store now compares incoming configuration by value rather than trusting the `version` header, so a flag edited server-side without a version bump is no longer treated as unchanged. This was invisible before because nothing consumed change information.
+
 ## 2.7.0 — 2026-09-01
 
 ### Fixed

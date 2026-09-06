@@ -39,7 +39,7 @@ const maxSSELineSize = 16 * 1024 * 1024 // 16 MiB
 type streamSource struct {
 	hc                *httpClient
 	store             *store
-	onUpdate          func(key string)
+	onUpdate          func(keys []string)
 	ctx               context.Context
 	cancel            context.CancelFunc
 	reconnectDelay    time.Duration // base backoff delay
@@ -51,7 +51,7 @@ type streamSource struct {
 }
 
 // newStreamSource creates a new SSE stream source.
-func newStreamSource(hc *httpClient, store *store, onUpdate func(key string)) *streamSource {
+func newStreamSource(hc *httpClient, store *store, onUpdate func(keys []string)) *streamSource {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &streamSource{
 		hc:                hc,
@@ -248,9 +248,9 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 				"may be older than the flag configuration.", evt.Key, reason)
 			return
 		}
-		ss.store.setFlag(*flag)
-		if ss.onUpdate != nil {
-			ss.onUpdate(evt.Key)
+		changed := ss.store.setFlag(*flag)
+		if len(changed) > 0 && ss.onUpdate != nil {
+			ss.onUpdate(changed)
 		}
 
 	case "flag.deleted":
@@ -262,9 +262,9 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 		if evt.Key == "" {
 			return
 		}
-		ss.store.removeFlag(evt.Key)
-		if ss.onUpdate != nil {
-			ss.onUpdate(evt.Key)
+		changed := ss.store.removeFlag(evt.Key)
+		if len(changed) > 0 && ss.onUpdate != nil {
+			ss.onUpdate(changed)
 		}
 
 	case "segment.updated":
@@ -277,9 +277,9 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 			}
 			return
 		}
-		ss.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))
-		if ss.onUpdate != nil {
-			ss.onUpdate("")
+		changed := ss.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))
+		if len(changed) > 0 && ss.onUpdate != nil {
+			ss.onUpdate(changed)
 		}
 
 	case "sync":
@@ -301,9 +301,9 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 			log.Printf("[featureflip] discarding malformed sync snapshot: %v", err)
 			return
 		}
-		ss.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))
-		if ss.onUpdate != nil {
-			ss.onUpdate("")
+		changed := ss.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))
+		if len(changed) > 0 && ss.onUpdate != nil {
+			ss.onUpdate(changed)
 		}
 	}
 }
@@ -321,7 +321,7 @@ func (ss *streamSource) startFallbackPolling() {
 		return
 	}
 	// Poll at the base reconnect interval (tests use sub-second; prod ~3s).
-	ps := newPollSource(ss.hc, ss.store, ss.reconnectDelay)
+	ps := newPollSource(ss.hc, ss.store, ss.reconnectDelay, ss.onUpdate)
 	go ps.run()
 	ss.fallbackPoll = ps
 }

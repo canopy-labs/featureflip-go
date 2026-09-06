@@ -30,7 +30,7 @@ func TestPolling_FetchesPeriodically(t *testing.T) {
 	hc := newHTTPClient("sdk-key", cfg)
 	s := newStore()
 
-	ps := newPollSource(hc, s, 100*time.Millisecond)
+	ps := newPollSource(hc, s, 100*time.Millisecond, nil)
 
 	go ps.run()
 
@@ -76,7 +76,7 @@ func TestPolling_StopsCleanly(t *testing.T) {
 	hc := newHTTPClient("sdk-key", cfg)
 	s := newStore()
 
-	ps := newPollSource(hc, s, 100*time.Millisecond)
+	ps := newPollSource(hc, s, 100*time.Millisecond, nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -121,7 +121,7 @@ func TestPolling_HandlesServerErrors(t *testing.T) {
 	hc := newHTTPClient("sdk-key", cfg)
 	s := newStore()
 
-	ps := newPollSource(hc, s, 100*time.Millisecond)
+	ps := newPollSource(hc, s, 100*time.Millisecond, nil)
 
 	go ps.run()
 

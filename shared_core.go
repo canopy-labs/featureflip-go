@@ -2,6 +2,7 @@ package featureflip
 
 import (
 	"context"
+	"log"
 	"sync"
 	"sync/atomic"
 )
@@ -29,6 +30,13 @@ type sharedCore struct {
 	// to any other goroutine, and is never mutated afterwards — so the
 	// evaluation hot path reads it without synchronization.
 	inspectors []EvaluationInspector
+
+	// updateListeners is the flag-update subscription registry. Keyed by an
+	// incrementing id so an unsubscribe can remove exactly its own entry —
+	// funcs are not comparable in Go, so a slice-and-search would not work.
+	updateMu        sync.Mutex
+	updateListeners map[int64]FlagUpdateListener
+	nextListenerID  int64
 
 	refCount int32 // accessed via atomic operations
 	shutDown int32 // 0 = alive, 1 = shut down (CAS guard)
@@ -87,7 +95,13 @@ func (sc *sharedCore) doInit() error {
 	select {
 	case result := <-ch:
 		if result.err == nil {
-			sc.store.setAll(result.resp.Flags, result.resp.Segments)
+			// Return value deliberately discarded: this is the INITIAL load,
+			// and a cold start is not a change. Defensive rather than load-
+			// bearing today — a listener can only be registered through a
+			// Client, and Get does not return until this has already run — but
+			// it states the contract at the one site that would otherwise be
+			// free to break it.
+			_ = sc.store.setAll(result.resp.Flags, result.resp.Segments)
 		}
 		// On error: leave the store empty; the data source populates it on recovery.
 	case <-ctx.Done():
@@ -98,12 +112,12 @@ func (sc *sharedCore) doInit() error {
 	// an outage recovers automatically.
 	sc.ep.start()
 	if sc.cfg.streaming {
-		ss := newStreamSource(sc.hc, sc.store, nil)
+		ss := newStreamSource(sc.hc, sc.store, sc.notifyUpdateListeners)
 		ss.connectTimeout = sc.cfg.connectTimeout
 		go ss.run()
 		sc.stopStream = ss.stop
 	} else {
-		ps := newPollSource(sc.hc, sc.store, sc.cfg.pollInterval)
+		ps := newPollSource(sc.hc, sc.store, sc.cfg.pollInterval, sc.notifyUpdateListeners)
 		go ps.run()
 		sc.stopPoll = ps.stop
 	}
@@ -169,6 +183,69 @@ func (sc *sharedCore) shutdown() {
 		sc.stopPoll()
 	}
 	sc.ep.stop()
+
+	// Drop every subscription. The data sources are stopped above, so nothing
+	// should fire after this, but a listener held here would also pin whatever
+	// the caller's closure captured for the lifetime of the process.
+	sc.updateMu.Lock()
+	sc.updateListeners = nil
+	sc.updateMu.Unlock()
+}
+
+// addUpdateListener registers a flag-update listener and returns its
+// unsubscribe func. The unsubscribe is idempotent.
+func (sc *sharedCore) addUpdateListener(listener FlagUpdateListener) func() {
+	sc.updateMu.Lock()
+	defer sc.updateMu.Unlock()
+
+	if sc.updateListeners == nil {
+		sc.updateListeners = make(map[int64]FlagUpdateListener)
+	}
+	id := sc.nextListenerID
+	sc.nextListenerID++
+	sc.updateListeners[id] = listener
+
+	return func() {
+		sc.updateMu.Lock()
+		defer sc.updateMu.Unlock()
+		delete(sc.updateListeners, id)
+	}
+}
+
+// notifyUpdateListeners fans a change out to every registered listener.
+//
+// Runs on the streaming or polling goroutine. The listener slice is copied out
+// under the lock and the calls are made without it, so a listener that
+// subscribes, unsubscribes, or blocks cannot deadlock the data source or the
+// registry.
+//
+// A panicking listener is contained: it is logged and the remaining listeners
+// still run. A panic crossing back into the SSE read loop would kill the
+// stream goroutine and take flag delivery down with it.
+func (sc *sharedCore) notifyUpdateListeners(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+
+	sc.updateMu.Lock()
+	listeners := make([]FlagUpdateListener, 0, len(sc.updateListeners))
+	for _, listener := range sc.updateListeners {
+		listeners = append(listeners, listener)
+	}
+	sc.updateMu.Unlock()
+
+	for _, listener := range listeners {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[featureflip] flag-update listener panicked: %v", r)
+				}
+			}()
+			// Each listener gets its own copy, so one that sorts or truncates
+			// the slice cannot corrupt what the next one sees.
+			listener(append([]string(nil), keys...))
+		}()
+	}
 }
 
 func (sc *sharedCore) debugRefCount() int {

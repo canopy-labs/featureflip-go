@@ -46,7 +46,7 @@ func pollOnce(t *testing.T, s *store, handler http.HandlerFunc) string {
 
 	cfg := defaultConfig()
 	cfg.baseURL = server.URL
-	ps := newPollSource(newHTTPClient("sdk-key", cfg), s, time.Hour)
+	ps := newPollSource(newHTTPClient("sdk-key", cfg), s, time.Hour, nil)
 	ps.poll()
 
 	return logBuf.String()
@@ -147,7 +147,7 @@ func TestPolling_StaysSilentWhenTheServerIsUnreachable(t *testing.T) {
 	cfg := defaultConfig()
 	// Nothing is listening here; this is the offline-client case.
 	cfg.baseURL = "http://127.0.0.1:1"
-	ps := newPollSource(newHTTPClient("sdk-key", cfg), s, time.Hour)
+	ps := newPollSource(newHTTPClient("sdk-key", cfg), s, time.Hour, nil)
 	ps.poll()
 
 	if logged := logBuf.String(); logged != "" {

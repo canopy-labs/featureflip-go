@@ -51,11 +51,11 @@ func TestStreaming_ReceivesFlagUpdate(t *testing.T) {
 	hc := newHTTPClient("sdk-key", cfg)
 	s := newStore()
 
-	var updatedKey string
+	var updatedKeys []string
 	var mu sync.Mutex
-	onUpdate := func(key string) {
+	onUpdate := func(keys []string) {
 		mu.Lock()
-		updatedKey = key
+		updatedKeys = keys
 		mu.Unlock()
 	}
 
@@ -82,10 +82,10 @@ func TestStreaming_ReceivesFlagUpdate(t *testing.T) {
 
 	// Verify the callback was called.
 	mu.Lock()
-	key := updatedKey
+	keys := updatedKeys
 	mu.Unlock()
-	if key != "my-flag" {
-		t.Errorf("onUpdate key = %q, want my-flag", key)
+	if len(keys) != 1 || keys[0] != "my-flag" {
+		t.Errorf("onUpdate keys = %v, want [my-flag]", keys)
 	}
 }
 
@@ -258,11 +258,11 @@ func TestStreaming_FlagDeleted(t *testing.T) {
 	s := newStore()
 	s.setFlag(flagDTO{Key: "delete-me", Version: 1, Enabled: true, Type: "Boolean"})
 
-	var updatedKey string
+	var updatedKeys []string
 	var mu sync.Mutex
-	onUpdate := func(key string) {
+	onUpdate := func(keys []string) {
 		mu.Lock()
-		updatedKey = key
+		updatedKeys = keys
 		mu.Unlock()
 	}
 
@@ -279,10 +279,10 @@ func TestStreaming_FlagDeleted(t *testing.T) {
 	}
 
 	mu.Lock()
-	key := updatedKey
+	keys := updatedKeys
 	mu.Unlock()
-	if key != "delete-me" {
-		t.Errorf("onUpdate key = %q, want delete-me", key)
+	if len(keys) != 1 || keys[0] != "delete-me" {
+		t.Errorf("onUpdate keys = %v, want [delete-me]", keys)
 	}
 }
 
@@ -626,8 +626,8 @@ func TestStreaming_SyncReplacesStore(t *testing.T) {
 	s.setFlag(flagDTO{Key: "flag-stale", Version: 1, Enabled: true, Type: "Boolean"})
 
 	var mu sync.Mutex
-	var updateKey string
-	ss := newStreamSource(hc, s, func(k string) { mu.Lock(); updateKey = k; mu.Unlock() })
+	var updateKeys []string
+	ss := newStreamSource(hc, s, func(keys []string) { mu.Lock(); updateKeys = keys; mu.Unlock() })
 	ss.reconnectDelay = 50 * time.Millisecond
 
 	go ss.run()
@@ -640,11 +640,14 @@ func TestStreaming_SyncReplacesStore(t *testing.T) {
 	if _, ok := s.getFlag("flag-stale"); ok {
 		t.Error("flag-stale should be GONE after a full-replace sync (not merged)")
 	}
+	// A full-replace sync reports what actually moved, not a sentinel: the
+	// snapshot adds flag-new and drops flag-stale, and both are changes for
+	// anyone holding the old value.
 	mu.Lock()
-	k := updateKey
+	keys := updateKeys
 	mu.Unlock()
-	if k != "" {
-		t.Errorf("onUpdate key = %q, want \"\" (full refresh)", k)
+	if len(keys) != 2 || keys[0] != "flag-new" || keys[1] != "flag-stale" {
+		t.Errorf("onUpdate keys = %v, want [flag-new flag-stale]", keys)
 	}
 }
 
