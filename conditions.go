@@ -182,7 +182,7 @@ func evaluateCondition(c condition, ctx EvaluationContext) bool {
 	// disagrees between the engine and SDK (e.g. float64(1.0) → "1" in Go but
 	// "1.0" in the engine). Only equals/in/notequals/notin are coerced; all
 	// other operators (contains/startswith/relational/...) keep the string path.
-	op := strings.ToLower(c.Operator)
+	op := normalizeOperator(c.Operator)
 	switch op {
 	case "equals", "in", "notequals", "notin":
 		if attrFloat, isNum := attrAsFloat(raw); isNum {
@@ -206,6 +206,27 @@ func evaluateCondition(c condition, ctx EvaluationContext) bool {
 	return result
 }
 
+// normalizeOperator is the single definition of "recognised operator" shared by
+// the four string-typed SDKs (js, go, ruby, php) -- see #2374. It strips
+// underscores and folds case, so the canonical PascalCase the API emits
+// ("NotEquals"), the concatenated form this SDK already accepted ("notequals",
+// "NOTEQUALS") and the snake_case form php accepted ("not_equals") all resolve
+// to the same label.
+//
+// Stripping underscores is the part that is new here, and it is what makes the
+// shared rule a superset of every SDK's previous one rather than a fifth
+// variant: this SDK lowercased but kept underscores, so it rejected
+// "not_equals"; php inserted underscores before PascalCase runs, so it rejected
+// "notequals". Each accepted a form the other refused. Normalising this way
+// means no SDK gets stricter, so no configuration that evaluated before stops
+// doing so.
+//
+// The concatenated labels below stay unambiguous under this mapping -- no two
+// operator names collide once underscores are removed.
+func normalizeOperator(op string) string {
+	return strings.ToLower(strings.ReplaceAll(op, "_", ""))
+}
+
 // evaluateOperatorChecked evaluates a single operator against a value and
 // targets. All string comparisons are case-insensitive.
 //
@@ -215,7 +236,7 @@ func evaluateCondition(c condition, ctx EvaluationContext) bool {
 func evaluateOperatorChecked(op string, value string, targets []string) (bool, bool) {
 	lower := strings.ToLower(value)
 
-	switch strings.ToLower(op) {
+	switch normalizeOperator(op) {
 	case "equals", "in":
 		for _, t := range targets {
 			if strings.ToLower(t) == lower {

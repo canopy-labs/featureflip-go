@@ -2,6 +2,7 @@ package featureflip
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -1027,4 +1028,77 @@ func TestEvaluateConditions_UnknownOperatorNegated_DoesNotMatchAll(t *testing.T)
 	if evaluateConditions(conds, "And", ctx) {
 		t.Error("negated unknown operator matched every user; must fail closed")
 	}
+}
+
+// Issue #2374: the four string-typed SDKs (js, go, ruby, php) share ONE
+// definition of "recognised operator" -- underscores stripped, case folded.
+// This SDK previously lowercased without stripping, so it accepted "notequals"
+// but rejected "not_equals", which php accepted; php rejected "notequals",
+// which this SDK accepted. Each refused a form the other allowed. Normalising
+// by removal is a superset of both, so nothing that evaluated before stops.
+func TestNormalizeOperator_SharedDefinition(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"canonical PascalCase from the API", "NotEquals", "notequals"},
+		{"already concatenated lowercase", "notequals", "notequals"},
+		{"screaming concatenated", "NOTEQUALS", "notequals"},
+		{"snake_case, previously rejected here", "not_equals", "notequals"},
+		{"screaming snake, previously rejected everywhere", "NOT_EQUALS", "notequals"},
+		{"single word needs no folding", "Equals", "equals"},
+		{"multi-segment operator", "SemverGreaterThanOrEqual", "semvergreaterthanorequal"},
+		{"multi-segment operator in snake_case", "semver_greater_than_or_equal", "semvergreaterthanorequal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeOperator(tc.input); got != tc.want {
+				t.Errorf("normalizeOperator(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// A genuinely unknown operator must still be unknown after normalisation --
+// the widened rule resolves SPELLINGS, it does not invent operators. Paired
+// with the fail-closed guarantee of #2262 asserted elsewhere in this file.
+func TestNormalizeOperator_DoesNotInventOperators(t *testing.T) {
+	for _, op := range []string{"SomeFutureOperator", "some_future_operator", ""} {
+		if _, recognised := evaluateOperatorChecked(op, "US", []string{"US"}); recognised {
+			t.Errorf("operator %q was recognised; want unrecognised", op)
+		}
+	}
+}
+
+// Every operator this SDK dispatches must round-trip through the normaliser
+// from its canonical PascalCase wire spelling. A label added to the switch in
+// a form the normaliser cannot produce would be permanently unreachable.
+func TestNormalizeOperator_EveryCanonicalOperatorResolves(t *testing.T) {
+	canonical := []string{
+		"Equals", "NotEquals", "In", "NotIn", "Contains", "NotContains",
+		"StartsWith", "EndsWith", "MatchesRegex", "GreaterThan",
+		"GreaterThanOrEqual", "LessThan", "LessThanOrEqual", "Before", "After",
+		"SemverEquals", "SemverGreaterThan", "SemverGreaterThanOrEqual",
+		"SemverLessThan", "SemverLessThanOrEqual",
+	}
+	for _, op := range canonical {
+		for _, spelling := range []string{op, normalizeOperator(op), toScreamingSnake(op)} {
+			if _, recognised := evaluateOperatorChecked(spelling, "1", []string{"1"}); !recognised {
+				t.Errorf("operator %q (spelled %q) was not recognised", op, spelling)
+			}
+		}
+	}
+}
+
+// toScreamingSnake renders "NotEquals" as "NOT_EQUALS" -- the spelling no SDK
+// accepted before #2374 and every one accepts now.
+func toScreamingSnake(op string) string {
+	var b []rune
+	for i, r := range op {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			b = append(b, '_')
+		}
+		b = append(b, r)
+	}
+	return strings.ToUpper(string(b))
 }
