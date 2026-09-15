@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.8.1 — 2026-09-14
+
+### Changed
+
+- No changes to the library itself. The public repository, `canopy-labs/featureflip-go`, now runs its own CI on every push and pull request (gofmt, `go vet`, and `go test -race` with coverage on Go 1.25 and 1.26) and publishes a coverage report. Upgrading from 2.8.0 changes only the version the SDK reports in its `User-Agent`.
+
 ## 2.8.0 — 2026-09-06
 
 ### Added

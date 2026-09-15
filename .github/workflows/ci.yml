@@ -1,0 +1,80 @@
+# CI for the PUBLIC mirror, canopy-labs/featureflip-go. It does nothing in this
+# monorepo: publish-go-sdk.yml copies packages/go-sdk/ to the mirror's root on
+# every Go SDK release, and only there does this file become a live workflow,
+# because GitHub runs workflows from a repository's root .github/ only. The
+# monorepo's own SDK checks are .github/workflows/go-sdk-ci.yml.
+#
+# It exists so the public repo shows its own CI and a public coverage report,
+# both of which awesome-go checks (#2978). Coverage goes to whichever service is
+# switched on for the mirror (#2982): Codecov when the mirror has a
+# CODECOV_TOKEN secret, Coveralls otherwise. Neither upload can fail the build,
+# so this is safe to ship before either service exists.
+#
+# Dependabot does not scan this path. Bump these action versions by hand
+# alongside go-sdk-ci.yml's.
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (Go ${{ matrix.go-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ['1.25', '1.26']
+    env:
+      # Job-level so the upload steps' `if:` can read it. It is empty on fork
+      # PRs and until the secret exists, which selects the Coveralls path.
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would reformat these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Test (race detector, coverage)
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      # One upload per run, from the newest Go in the matrix.
+      - name: Upload coverage to Codecov
+        if: matrix.go-version == '1.26' && env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ env.CODECOV_TOKEN }}
+          files: coverage.out
+          fail_ci_if_error: false
+
+      - name: Upload coverage to Coveralls
+        if: matrix.go-version == '1.26' && env.CODECOV_TOKEN == ''
+        uses: coverallsapp/github-action@v2
+        with:
+          file: coverage.out
+          format: golang
+          fail-on-error: false
