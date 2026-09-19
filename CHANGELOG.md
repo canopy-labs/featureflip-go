@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.8.2 — 2026-09-19
+
+### Fixed
+
+- The fallback poller is now retired on the first frame the stream delivers, rather than when `connect` returns. A healthy stream never returns from `connect` — its read loop blocks for the connection's whole lifetime — so a poller armed during an outage kept running beside the stream that had already recovered, for as long as that stream stayed up. Its periodic whole-store replaces then reverted the deltas SSE had applied: a poll response fetched before an update could land after it and put the old value back, so a flag change appeared and then vanished again until the next poll. The fallback itself was already additive here, so real-time updates were never lost — the symptom was stale-value flapping, not silence. The reap now happens where the Python SDK's does. ([#3075](https://github.com/canopy-labs/featureflip/issues/3075))
+
 ## 2.8.1 — 2026-09-14
 
 ### Changed

@@ -207,7 +207,17 @@ func (ss *streamSource) connect() (reached bool, err error) {
 				// A complete event frame proves the stream is genuinely alive and
 				// delivering (this includes server pings), so it counts as a real
 				// recovery for run()'s fallback bookkeeping.
-				delivered = true
+				if !delivered {
+					delivered = true
+					// Retire the fallback poller HERE rather than leaving it to run()
+					// (#3075). This loop blocks for the whole lifetime of a healthy
+					// stream, so a reap on return keeps the poller alive beside it for
+					// that entire time — and its periodic whole-store replaces revert
+					// the deltas this stream applies, which is the stale-value flapping
+					// python's _streaming.py documents. run() still reaps on return;
+					// stopFallbackPolling is idempotent.
+					ss.stopFallbackPolling()
+				}
 			}
 			eventType = ""
 			data = ""
@@ -334,6 +344,14 @@ func (ss *streamSource) stopFallbackPolling() {
 		ss.fallbackPoll.stop()
 		ss.fallbackPoll = nil
 	}
+}
+
+// hasFallbackPoller reports whether a polling fallback is currently running.
+// For testing/diagnostics only.
+func (ss *streamSource) hasFallbackPoller() bool {
+	ss.fallbackMu.Lock()
+	defer ss.fallbackMu.Unlock()
+	return ss.fallbackPoll != nil
 }
 
 // stop cancels the SSE connection, the reconnection loop, and any polling fallback.

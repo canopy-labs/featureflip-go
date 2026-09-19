@@ -591,6 +591,119 @@ func TestStreaming_ArmsPollingFallbackWhenStreamDeliversNoEvents(t *testing.T) {
 	t.Fatal("polling fallback never armed for a stream that reached 200 but delivered no events")
 }
 
+func TestStreaming_ReapsFallbackPollerWhileTheRecoveredStreamIsStillUp(t *testing.T) {
+	// The fallback poller must be retired as soon as the recovered stream delivers
+	// an event, NOT when that stream eventually drops. connect() blocks for the
+	// whole lifetime of a healthy stream, so reaping only on its return leaves the
+	// poller alive beside it for as long as the stream stays healthy — hours — and
+	// its periodic whole-store replaces revert the deltas the stream applied (the
+	// stale-value flapping python's _streaming.py documents). It also costs one
+	// request per interval per instance for no benefit.
+	var attempts atomic.Int32
+	// Gates the first successful connect, so the fallback is observably armed
+	// before the stream is allowed to recover.
+	release := make(chan struct{})
+	// Holds the recovered connection open for the rest of the test.
+	held := make(chan struct{})
+
+	snapshot := getFlagsResponse{
+		Environment: "test",
+		Version:     2,
+		Flags:       []flagDTO{{Key: "stream-flag", Version: 1, Enabled: true, Type: "Boolean"}},
+		Segments:    []segmentDTO{},
+	}
+	snapshotJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sdk/stream":
+			if attempts.Add(1) <= 2 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "no flush", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, "event: sync\ndata: %s\n\n", snapshotJSON)
+			flusher.Flush()
+			// A healthy stream does not return.
+			select {
+			case <-held:
+			case <-r.Context().Done():
+			}
+		case "/v1/sdk/flags":
+			resp := getFlagsResponse{
+				Environment: "test",
+				Version:     1,
+				Flags:       []flagDTO{{Key: "poll-flag", Version: 1, Enabled: true, Type: "Boolean"}},
+				Segments:    []segmentDTO{},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	defer close(held)
+
+	cfg := defaultConfig()
+	cfg.baseURL = server.URL
+	hc := newHTTPClient("sdk-key", cfg)
+	s := newStore()
+
+	ss := newStreamSource(hc, s, nil)
+	ss.reconnectDelay = 20 * time.Millisecond
+	ss.fallbackThreshold = 2
+
+	go ss.run()
+	defer ss.stop()
+
+	if !waitUntil(2*time.Second, func() bool { return ss.hasFallbackPoller() }) {
+		t.Fatal("polling fallback never armed while the stream was down")
+	}
+
+	close(release)
+
+	if !waitUntil(2*time.Second, func() bool { return !ss.hasFallbackPoller() }) {
+		t.Fatal("polling fallback was not reaped while the recovered stream was still up")
+	}
+
+	// The stream really is still up: it has not been reconnected, and its snapshot
+	// applied. Without both, an early reap would be indistinguishable from the
+	// stream having dropped again.
+	if got := attempts.Load(); got != 3 {
+		t.Errorf("expected the recovered connection to still be held (3 attempts), got %d", got)
+	}
+	if _, ok := s.getFlag("stream-flag"); !ok {
+		t.Error("the recovered stream's sync snapshot was never applied")
+	}
+}
+
+// waitUntil polls cond until it holds or the timeout elapses.
+func waitUntil(timeout time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return cond()
+}
+
 func TestStreaming_SyncReplacesStore(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/sdk/stream" {
