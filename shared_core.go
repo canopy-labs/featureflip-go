@@ -259,7 +259,8 @@ func (sc *sharedCore) isShutDown() bool {
 // configsEqual compares the fields that matter for the "options differ on
 // repeat Get()" warning. sdkKey is excluded (it is the cache key itself), and
 // so are inspectors — funcs are not comparable, and a differing callback must
-// not spuriously trigger the warning.
+// not spuriously trigger the warning. So is the wrapper: it identifies the
+// caller rather than changing behavior.
 func configsEqual(a, b config) bool {
 	return a.baseURL == b.baseURL &&
 		a.streaming == b.streaming &&

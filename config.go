@@ -12,6 +12,8 @@ type config struct {
 	connectTimeout time.Duration
 	readTimeout    time.Duration
 	inspectors     []EvaluationInspector
+	wrapperName    string
+	wrapperVersion string
 }
 
 func defaultConfig() config {
@@ -63,4 +65,21 @@ func WithReadTimeout(d time.Duration) Option { return func(c *config) { c.readTi
 // Get's inspectors are ignored.
 func WithInspectors(inspectors ...EvaluationInspector) Option {
 	return func(c *config) { c.inspectors = append(c.inspectors, inspectors...) }
+}
+
+// WithWrapper identifies a library that wraps this SDK, such as an OpenFeature
+// provider. Its token is sent after the SDK's own in the User-Agent
+// ("featureflip-go/<version> my-wrapper/1.0.0") so usage through the wrapper can
+// be counted. Both parts must be valid HTTP tokens; an invalid wrapper is ignored
+// with a logged warning. version may be empty. Leave unset when calling the SDK
+// directly.
+//
+// Not part of the "different options" check: it identifies the caller rather
+// than changing behavior. Like every other option, honored only on the first
+// [Get] for a given SDK key.
+func WithWrapper(name, version string) Option {
+	return func(c *config) {
+		c.wrapperName = name
+		c.wrapperVersion = version
+	}
 }

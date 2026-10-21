@@ -6,22 +6,49 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"time"
 )
 
 // sdkVersion is reported in the User-Agent. Go modules carry no manifest — the
 // git tag is the version — so this is maintained by hand and pinned to
 // CHANGELOG.md by tools/check-sdk-versions. Bump both together.
-const sdkVersion = "2.8.2"
+const sdkVersion = "2.9.0"
+
+// productToken matches an RFC 9110 product-token: one or more tchars.
+var productToken = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+
+// userAgent is the SDK token, then the configured wrapper's token (#4149). A
+// wrapper that is not a valid product token is dropped with a logged warning
+// rather than failing construction: identity metadata must never stop the client
+// starting.
+func userAgent(cfg config) string {
+	ua := "featureflip-go/" + sdkVersion
+	if cfg.wrapperName == "" {
+		return ua
+	}
+	if !productToken.MatchString(cfg.wrapperName) ||
+		(cfg.wrapperVersion != "" && !productToken.MatchString(cfg.wrapperVersion)) {
+		log.Printf("[featureflip] ignoring wrapper %q/%q: not a valid User-Agent product token",
+			cfg.wrapperName, cfg.wrapperVersion)
+		return ua
+	}
+	if cfg.wrapperVersion == "" {
+		return ua + " " + cfg.wrapperName
+	}
+	return ua + " " + cfg.wrapperName + "/" + cfg.wrapperVersion
+}
 
 // httpClient wraps stdlib net/http for communication with the evaluation API.
 type httpClient struct {
-	client  *http.Client
-	baseURL string
-	sdkKey  string
+	client    *http.Client
+	baseURL   string
+	sdkKey    string
+	userAgent string
 }
 
 // newHTTPClient creates a new httpClient with the given SDK key and config.
@@ -38,15 +65,16 @@ func newHTTPClient(sdkKey string, cfg config) *httpClient {
 			Transport: transport,
 			Timeout:   cfg.connectTimeout + cfg.readTimeout,
 		},
-		baseURL: cfg.baseURL,
-		sdkKey:  sdkKey,
+		baseURL:   cfg.baseURL,
+		sdkKey:    sdkKey,
+		userAgent: userAgent(cfg),
 	}
 }
 
 // setHeaders sets the standard SDK headers on a request.
 func (h *httpClient) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", h.sdkKey)
-	req.Header.Set("User-Agent", "featureflip-go/"+sdkVersion)
+	req.Header.Set("User-Agent", h.userAgent)
 }
 
 // isMalformedPayload reports whether err came from decoding a response body
