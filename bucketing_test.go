@@ -1,6 +1,7 @@
 package featureflip
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"testing"
@@ -93,4 +94,26 @@ func TestBucket_Distribution(t *testing.T) {
 	}
 	stddev := math.Sqrt(sum / 100.0)
 	t.Logf("distribution: min=%d, max=%d, stddev=%.2f, chi-squared=%.2f", min, max, stddev, chiSquared)
+}
+
+func TestBucketValue_JSONNumberSpellings(t *testing.T) {
+	cases := map[string]string{
+		"1e400":                "Infinity",
+		"-1e400":               "-Infinity",
+		"-0":                   "0",
+		"-00":                  "0",
+		"0":                    "0",
+		"42":                   "42",
+		"-7":                   "-7",
+		"12345678901234567890": "12345678901234567890",
+		"1.0":                  "1",
+		"1e-7":                 "1e-7",
+		"0.10":                 "0.1",
+	}
+	for in, want := range cases {
+		got, ok := bucketValue(EvaluationContext{Attributes: map[string]any{"id": json.Number(in)}}, "id")
+		if !ok || got != want {
+			t.Errorf("bucketValue(json.Number(%q)) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
 }

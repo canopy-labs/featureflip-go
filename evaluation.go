@@ -38,23 +38,28 @@ func evaluateWithSharedMemo(flag flagDTO, ctx EvaluationContext, segments map[st
 	return evaluateInternal(flag, ctx, segments, allFlags, 0, memo)
 }
 
+// serveOff serves the flag's off variation with the given reason. An off
+// variation the flag does not define is malformed config: report ReasonError
+// with the key and no value, like the engine's ServeVariation (#4236).
+func serveOff(flag flagDTO, reason EvaluationReason, prerequisiteKey string) EvaluationDetail {
+	if !variationExists(flag.Variations, flag.OffVariation) {
+		return EvaluationDetail{Variation: flag.OffVariation, Reason: ReasonError}
+	}
+	return EvaluationDetail{
+		Value:           resolveVariationValue(flag.Variations, flag.OffVariation),
+		Variation:       flag.OffVariation,
+		Reason:          reason,
+		PrerequisiteKey: prerequisiteKey,
+	}
+}
+
 func evaluateInternal(flag flagDTO, ctx EvaluationContext, segments map[string]segmentDTO, allFlags map[string]flagDTO, depth int, memo map[string]EvaluationDetail) EvaluationDetail {
 	if depth > maxPrerequisiteDepth {
-		val := resolveVariationValue(flag.Variations, flag.OffVariation)
-		return EvaluationDetail{
-			Value:     val,
-			Variation: flag.OffVariation,
-			Reason:    ReasonError,
-		}
+		return serveOff(flag, ReasonError, "")
 	}
 
 	if !flag.Enabled {
-		val := resolveVariationValue(flag.Variations, flag.OffVariation)
-		return EvaluationDetail{
-			Value:     val,
-			Variation: flag.OffVariation,
-			Reason:    ReasonFlagDisabled,
-		}
+		return serveOff(flag, ReasonFlagDisabled, "")
 	}
 
 	// Resolve prerequisites in order. A failing prerequisite short-circuits to
@@ -68,13 +73,7 @@ func evaluateInternal(flag flagDTO, ctx EvaluationContext, segments map[string]s
 			if !ok {
 				// Missing flag: fail safely. Memo the current flag's result
 				// under flag.Key — the prereq itself has no result to memo.
-				val := resolveVariationValue(flag.Variations, flag.OffVariation)
-				result := EvaluationDetail{
-					Value:           val,
-					Variation:       flag.OffVariation,
-					Reason:          ReasonPrerequisiteFailed,
-					PrerequisiteKey: prereq.PrerequisiteFlagKey,
-				}
+				result := serveOff(flag, ReasonPrerequisiteFailed, prereq.PrerequisiteFlagKey)
 				memo[flag.Key] = result
 				return result
 			}
@@ -84,24 +83,13 @@ func evaluateInternal(flag flagDTO, ctx EvaluationContext, segments map[string]s
 		}
 
 		if prereqResult.Reason == ReasonError {
-			val := resolveVariationValue(flag.Variations, flag.OffVariation)
-			result := EvaluationDetail{
-				Value:     val,
-				Variation: flag.OffVariation,
-				Reason:    ReasonError,
-			}
+			result := serveOff(flag, ReasonError, "")
 			memo[flag.Key] = result
 			return result
 		}
 
 		if prereqResult.Variation != prereq.ExpectedVariationKey {
-			val := resolveVariationValue(flag.Variations, flag.OffVariation)
-			result := EvaluationDetail{
-				Value:           val,
-				Variation:       flag.OffVariation,
-				Reason:          ReasonPrerequisiteFailed,
-				PrerequisiteKey: prereq.PrerequisiteFlagKey,
-			}
+			result := serveOff(flag, ReasonPrerequisiteFailed, prereq.PrerequisiteFlagKey)
 			memo[flag.Key] = result
 			return result
 		}
@@ -127,7 +115,19 @@ func evaluateInternal(flag flagDTO, ctx EvaluationContext, segments map[string]s
 		}
 
 		if matched {
-			variationKey := resolveServe(rule.Serve, ctx)
+			variationKey, ok := resolveServe(rule.Serve, ctx)
+			if !ok {
+				// The rollout can't bucket this context: the rule doesn't match (#4236).
+				warnUnbucketable(flag.Key, rule.ID, bucketByOf(rule.Serve))
+				continue
+			}
+			if !variationExists(flag.Variations, variationKey) {
+				// The served key names no variation: malformed config. Report Error (no
+				// rule id) with the served key, like the engine's ServeVariation (#4236).
+				result := EvaluationDetail{Variation: variationKey, Reason: ReasonError}
+				memo[flag.Key] = result
+				return result
+			}
 			val := resolveVariationValue(flag.Variations, variationKey)
 			result := EvaluationDetail{
 				Value:     val,
@@ -141,7 +141,17 @@ func evaluateInternal(flag flagDTO, ctx EvaluationContext, segments map[string]s
 	}
 
 	// No rules matched — fallthrough.
-	variationKey := resolveServe(flag.Fallthrough, ctx)
+	variationKey, ok := resolveServe(flag.Fallthrough, ctx)
+	if !ok {
+		// Serve the fallthrough's default variation rather than a rollout bucket (#4236).
+		warnUnbucketable(flag.Key, "", bucketByOf(flag.Fallthrough))
+		variationKey = flag.Fallthrough.Variation
+	}
+	if !variationExists(flag.Variations, variationKey) {
+		result := EvaluationDetail{Variation: variationKey, Reason: ReasonError}
+		memo[flag.Key] = result
+		return result
+	}
 	val := resolveVariationValue(flag.Variations, variationKey)
 	result := EvaluationDetail{
 		Value:     val,
@@ -152,39 +162,40 @@ func evaluateInternal(flag flagDTO, ctx EvaluationContext, segments map[string]s
 	return result
 }
 
+// bucketByOf returns the attribute a serve buckets on, defaulting to userId.
+func bucketByOf(serve serveConfig) string {
+	if serve.BucketBy == "" {
+		return "userId"
+	}
+	return serve.BucketBy
+}
+
 // resolveServe determines which variation key to serve based on the serve config.
 // For Fixed serve type, it returns the configured variation key directly.
 // For Rollout serve type, it uses deterministic bucketing.
 // Rollout bucketing uses serve.Salt directly (empty when absent), matching the
 // engine and all SDKs (#1452).
-func resolveServe(serve serveConfig, ctx EvaluationContext) string {
+//
+// ok is false when a Rollout serve can't bucket the context: its bucketBy value
+// is missing, nil, or the empty string. The caller then skips the rule or, for
+// a fallthrough, serves the fallthrough's default variation (#4236).
+func resolveServe(serve serveConfig, ctx EvaluationContext) (string, bool) {
 	if serve.Type == "Fixed" {
-		return serve.Variation
+		return serve.Variation, true
 	}
 
 	// A Rollout serve can arrive with no weighted variations — env-level PercentageRollout
 	// has nowhere to store per-variation weights, so the mapper emits Type=Rollout with no
 	// variations (#1469). Degrade to the default fixed variation instead of returning an empty
-	// key. Mirrors the engine + C#/Java SDK evaluators.
+	// key. Mirrors the engine + C#/Java SDK evaluators. Never a can't-bucket case.
 	if len(serve.Variations) == 0 {
-		return serve.Variation
+		return serve.Variation, true
 	}
 
 	// Rollout
-	bucketBy := serve.BucketBy
-	if bucketBy == "" {
-		bucketBy = "userId"
-	}
-
-	value, _ := getAttributeValue(ctx, bucketBy)
-
-	// Keyless user contexts can't be bucketed. Rather than hashing the empty value
-	// into an arbitrary salt-dependent bucket, serve the control (first) variation
-	// deterministically. The engine assigns a random GUID per eval (spreading
-	// anonymous users over HTTP); local SDK eval is deterministic, so parity is
-	// guaranteed only for keyed contexts (#1457).
-	if value == "" && (bucketBy == "userId" || bucketBy == "user_id") && len(serve.Variations) > 0 {
-		return serve.Variations[0].Key
+	value, _ := bucketValue(ctx, bucketByOf(serve))
+	if value == "" {
+		return "", false
 	}
 
 	b := bucket(serve.Salt, value)
@@ -193,14 +204,14 @@ func resolveServe(serve serveConfig, ctx EvaluationContext) string {
 	for _, wv := range serve.Variations {
 		cumulative += wv.Weight
 		if b < cumulative {
-			return wv.Key
+			return wv.Key, true
 		}
 	}
 
 	// Fallback: return last variation if bucket falls through (should not happen with correct
 	// weights summing to 100). serve.Variations is guaranteed non-empty — the no-variations case
 	// returned the default above.
-	return serve.Variations[len(serve.Variations)-1].Key
+	return serve.Variations[len(serve.Variations)-1].Key, true
 }
 
 // resolveVariationValue finds a variation by key and unmarshals its JSON value.

@@ -1,6 +1,7 @@
 package featureflip
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"testing"
@@ -211,7 +212,10 @@ func TestGoldenFlags(t *testing.T) {
 	g := loadGolden(t)
 	for _, raw := range g.FlagVectors {
 		var v goldenFlagVec
-		if err := json.Unmarshal(raw, &v); err != nil {
+		// json.Number, as the SDK parses a config: float64 cannot hold 1e400.
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		if err := dec.Decode(&v); err != nil {
 			t.Fatalf("parse flagVector: %v", err)
 		}
 

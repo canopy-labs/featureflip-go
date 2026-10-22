@@ -17,7 +17,7 @@ import (
 // sdkVersion is reported in the User-Agent. Go modules carry no manifest — the
 // git tag is the version — so this is maintained by hand and pinned to
 // CHANGELOG.md by tools/check-sdk-versions. Bump both together.
-const sdkVersion = "2.9.0"
+const sdkVersion = "2.10.0"
 
 // productToken matches an RFC 9110 product-token: one or more tchars.
 var productToken = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")

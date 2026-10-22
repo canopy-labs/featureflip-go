@@ -353,34 +353,74 @@ func TestEvaluate_Rollout_NoVariations_ServesDefault(t *testing.T) {
 	}
 }
 
-func TestEvaluate_Rollout_KeylessContext_ServesControl(t *testing.T) {
-	// A keyless/anonymous context (no userId/user_id) can't be bucketed.
-	// Rather than hashing the empty value into an arbitrary salt-dependent
-	// bucket ("collapse"), the SDK serves the control (first) variation
-	// deterministically (#1457). The thin control weight (1) means the old
-	// empty-hash behaviour would almost never land on "on", so this fails pre-fix.
-	flag := boolFlag("rollout-flag", true, "on", "off")
+func TestEvaluate_Rollout_KeylessContext_SkipsToFallthrough(t *testing.T) {
+	// A keyless context can't be bucketed, so a rollout rule is skipped and
+	// evaluation continues (#4236). The thin control weight (99 on "off")
+	// means the old "serve first variation" behaviour would answer "on".
+	flag := boolFlag("keyless-rollout-rule", true, "on", "off")
+	flag.Rules = []ruleDTO{{
+		ID:       "r1",
+		Priority: 1,
+		Serve: serveConfig{
+			Type:     "Rollout",
+			BucketBy: "userId",
+			Salt:     "test-salt",
+			Variations: []weightedVariation{
+				{Key: "on", Weight: 1},
+				{Key: "off", Weight: 99},
+			},
+		},
+	}}
+	flag.Fallthrough = serveConfig{Type: "Fixed", Variation: "off"}
+
+	result := evaluate(flag, EvaluationContext{}, nil, nil)
+	if result.Reason != ReasonFallthrough || result.Variation != "off" {
+		t.Fatalf("got reason=%q variation=%q, want fallthrough/off", result.Reason, result.Variation)
+	}
+}
+
+func TestEvaluate_Rollout_CustomBucketByMissing_SkipsToFallthrough(t *testing.T) {
+	flag := boolFlag("custom-missing-rollout", true, "on", "off")
 	flag.Fallthrough = serveConfig{
-		Type:     "Rollout",
-		BucketBy: "userId",
-		Salt:     "test-salt",
+		Type:      "Rollout",
+		BucketBy:  "anonymous_id",
+		Salt:      "s",
+		Variation: "off",
 		Variations: []weightedVariation{
 			{Key: "on", Weight: 1},
 			{Key: "off", Weight: 99},
 		},
 	}
+	// userId is present, but the rollout buckets by anonymous_id.
+	result := evaluate(flag, EvaluationContext{UserID: "user-1"}, nil, nil)
+	if result.Reason != ReasonFallthrough || result.Variation != "off" {
+		t.Fatalf("got reason=%q variation=%q, want fallthrough/off", result.Reason, result.Variation)
+	}
+}
 
-	// Keyless context: no UserID, no attributes.
-	ctx := EvaluationContext{}
+func TestEvaluate_KeylessRolloutRule_ThenFixedRule_ServesNextRule(t *testing.T) {
+	flag := boolFlag("keyless-then-fixed", true, "on", "off")
+	flag.Rules = []ruleDTO{
+		{
+			ID:       "r1",
+			Priority: 1,
+			Serve: serveConfig{
+				Type:     "Rollout",
+				BucketBy: "userId",
+				Salt:     "s",
+				Variations: []weightedVariation{
+					{Key: "on", Weight: 1},
+					{Key: "off", Weight: 99},
+				},
+			},
+		},
+		{ID: "r2", Priority: 2, Serve: serveConfig{Type: "Fixed", Variation: "on"}},
+	}
+	flag.Fallthrough = serveConfig{Type: "Fixed", Variation: "off"}
 
-	for i := 0; i < 20; i++ {
-		result := evaluate(flag, ctx, nil, nil)
-		if result.Variation != "on" {
-			t.Fatalf("iteration %d: Variation = %q, want %q (control should be served for keyless context)", i, result.Variation, "on")
-		}
-		if result.Value != true {
-			t.Fatalf("iteration %d: Value = %v, want true", i, result.Value)
-		}
+	result := evaluate(flag, EvaluationContext{}, nil, nil)
+	if result.Reason != ReasonRuleMatch || result.RuleID != "r2" || result.Variation != "on" {
+		t.Fatalf("got reason=%q rule=%q variation=%q, want rule-match/r2/on", result.Reason, result.RuleID, result.Variation)
 	}
 }
 
@@ -497,5 +537,70 @@ func TestEvaluate_MultipleRules_FirstMatchWins(t *testing.T) {
 
 	if result.RuleID != "rule-1" {
 		t.Errorf("RuleID = %q, want %q (first match should win)", result.RuleID, "rule-1")
+	}
+}
+
+func fixedRuleFlag(variation string) flagDTO {
+	flag := boolFlag("test-flag", true, "on", "off")
+	flag.Rules = []ruleDTO{{ID: "r1", Priority: 1, Serve: serveConfig{Type: "Fixed", Variation: variation}}}
+	return flag
+}
+
+func TestEvaluate_RuleServingUnknownVariationKey_IsError(t *testing.T) {
+	result := evaluate(fixedRuleFlag("zzz"), EvaluationContext{UserID: "u1"}, nil, nil)
+
+	if result.Reason != ReasonError || result.Variation != "zzz" || result.RuleID != "" || result.Value != nil {
+		t.Errorf("got %+v, want Error/zzz/no rule id/nil value", result)
+	}
+}
+
+func TestEvaluate_FallthroughServingUnknownVariationKey_IsError(t *testing.T) {
+	flag := boolFlag("test-flag", true, "on", "off")
+	flag.Fallthrough.Variation = "zzz"
+	result := evaluate(flag, EvaluationContext{UserID: "u1"}, nil, nil)
+
+	if result.Reason != ReasonError || result.Variation != "zzz" {
+		t.Errorf("got %+v, want Error/zzz", result)
+	}
+}
+
+func TestEvaluate_RuleServingVariationKeyedEmpty_Matches(t *testing.T) {
+	flag := fixedRuleFlag("")
+	flag.Variations = append(flag.Variations, variationDTO{Key: "", Value: json.RawMessage(`"empty"`)})
+	result := evaluate(flag, EvaluationContext{UserID: "u1"}, nil, nil)
+
+	if result.Reason != ReasonRuleMatch || result.RuleID != "r1" || result.Variation != "" || result.Value != "empty" {
+		t.Errorf("got %+v, want RuleMatch/r1/\"\"/empty", result)
+	}
+}
+
+func TestEvaluate_UnknownOffVariation_IsError(t *testing.T) {
+	flag := boolFlag("test-flag", false, "on", "off")
+	flag.OffVariation = "zzz"
+	result := evaluate(flag, EvaluationContext{UserID: "u1"}, nil, nil)
+	if result.Reason != ReasonError || result.Variation != "zzz" || result.Value != nil {
+		t.Errorf("disabled: got %+v, want Error/zzz/nil", result)
+	}
+}
+
+func TestEvaluate_FailedPrerequisiteWithUnknownOffVariation_IsError(t *testing.T) {
+	main := boolFlag("main", true, "on", "off")
+	main.OffVariation = "zzz"
+	main.Prerequisites = []prerequisite{{PrerequisiteFlagKey: "p", ExpectedVariationKey: "on"}}
+	parent := boolFlag("p", false, "on", "off")
+	result := evaluate(main, EvaluationContext{UserID: "u1"}, nil, map[string]flagDTO{"p": parent})
+	if result.Reason != ReasonError || result.Variation != "zzz" || result.Value != nil {
+		t.Errorf("got %+v, want Error/zzz/nil", result)
+	}
+}
+
+func TestEvaluate_DependentOfUnknownOffPrerequisite_IsErrorServingItsOwnOff(t *testing.T) {
+	parent := boolFlag("p", false, "on", "off")
+	parent.OffVariation = "zzz"
+	main := boolFlag("main", true, "on", "off")
+	main.Prerequisites = []prerequisite{{PrerequisiteFlagKey: "p", ExpectedVariationKey: "on"}}
+	result := evaluate(main, EvaluationContext{UserID: "u1"}, nil, map[string]flagDTO{"p": parent})
+	if result.Reason != ReasonError || result.Variation != "off" || result.Value != false {
+		t.Errorf("got %+v, want Error/off/false", result)
 	}
 }

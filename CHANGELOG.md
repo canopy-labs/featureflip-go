@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.10.0 — 2026-10-22
+
+### Changed
+
+- A percentage rollout that can't bucket the context (no `user_id`, or no value for its bucket-by attribute) now skips the rule and evaluation continues with the next rule or the fallthrough. Previously the SDK served the rollout's first variation, which is the variation being rolled out. A warning is logged once per flag and rule. ([#4236](https://github.com/canopy-labs/featureflip/issues/4236))
+- Decimal numbers used as a rollout bucket value now hash in one canonical spelling shared with the Evaluation API (for example `1.0` hashes as `1`), so the same context gets the same variant in every SDK. Integer values are unchanged. A context whose user id is a non-integer number may get a different variant. A `json.Number` of `-0` hashes as `0`, and one too large for a float64 (`1e400`) as `Infinity`. ([#4236](https://github.com/canopy-labs/featureflip/issues/4236))
+- A rollout bucketing on `userId` or `user_id` now falls back to an attribute of that name when `UserID` is empty, as the Evaluation API does, so a `user_id` attribute of `0` or `false` buckets. Conditions are unchanged. ([#4236](https://github.com/canopy-labs/featureflip/issues/4236))
+- Malformed variation references now evaluate to reason `ReasonError` the way the Evaluation API does. A rule or fallthrough that serves a key the flag doesn't define (the detail already reported `ReasonError` and the default) no longer reports the rule id, and a served empty-string key with no empty-string variation is now an `ReasonError` too. A flag whose prerequisite serves an undefined variation, or whose own off variation is undefined, now reports `ReasonError` (still serving its off variation) instead of `ReasonPrerequisiteFailed` or `ReasonFlagDisabled`. ([#4236](https://github.com/canopy-labs/featureflip/issues/4236))
+
 ## 2.9.0 — 2026-10-20
 
 ### Added
