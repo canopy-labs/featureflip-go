@@ -112,6 +112,12 @@ type sdkEvent struct {
 	Variation string         `json:"variation,omitempty"`
 	Timestamp string         `json:"timestamp"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
+
+	// Evaluation-only (#4268): the kebab-case reason category, the matched rule's
+	// id (rule-match only) and the failed prerequisite's key.
+	Reason          string `json:"reason,omitempty"`
+	RuleID          string `json:"ruleId,omitempty"`
+	PrerequisiteKey string `json:"prerequisiteKey,omitempty"`
 }
 
 type recordEventsRequest struct {

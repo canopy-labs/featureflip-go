@@ -174,6 +174,7 @@ func (c *Client) BoolVariation(key string, ctx EvaluationContext, defaultValue b
 	// detail is a value copy; rewriting it here cannot affect the store or the
 	// caller — it only makes the inspector event report what we return.
 	value := narrow(&detail, defaultValue)
+	c.core.recordEvaluation(key, ctx, detail)
 	c.core.notifyInspectors(key, ctx, detail)
 	return value
 }
@@ -191,6 +192,7 @@ func (c *Client) StringVariation(key string, ctx EvaluationContext, defaultValue
 	// detail is a value copy; rewriting it here cannot affect the store or the
 	// caller — it only makes the inspector event report what we return.
 	value := narrow(&detail, defaultValue)
+	c.core.recordEvaluation(key, ctx, detail)
 	c.core.notifyInspectors(key, ctx, detail)
 	return value
 }
@@ -208,6 +210,7 @@ func (c *Client) Float64Variation(key string, ctx EvaluationContext, defaultValu
 	// detail is a value copy; rewriting it here cannot affect the store or the
 	// caller — it only makes the inspector event report what we return.
 	value := narrow(&detail, defaultValue)
+	c.core.recordEvaluation(key, ctx, detail)
 	c.core.notifyInspectors(key, ctx, detail)
 	return value
 }
@@ -227,6 +230,7 @@ func (c *Client) JSONVariation(key string, ctx EvaluationContext, defaultValue a
 		value = defaultValue
 	}
 	detail.Value = value
+	c.core.recordEvaluation(key, ctx, detail)
 	c.core.notifyInspectors(key, ctx, detail)
 	return value
 }
@@ -241,6 +245,7 @@ func (c *Client) VariationDetail(key string, ctx EvaluationContext, defaultValue
 		return EvaluationDetail{Value: defaultValue, Reason: ReasonError}
 	}
 	detail := c.core.evaluateFlag(key, ctx, defaultValue)
+	c.core.recordEvaluation(key, ctx, detail)
 	c.core.notifyInspectors(key, ctx, detail)
 	return detail
 }
@@ -379,6 +384,7 @@ func (c *Client) OnUpdate(listener FlagUpdateListener) func() {
 // store), so its error case — a prerequisite chain deeper than
 // maxPrerequisiteDepth, or an error bubbling up from a prerequisite — arrives
 // as a normal return carrying [ReasonError] and is notified like any other.
+// The analytics event is likewise recorded by each accessor (recordEvaluation).
 func (sc *sharedCore) evaluateFlag(key string, ctx EvaluationContext, defaultValue any) EvaluationDetail {
 	flag, ok := sc.store.getFlag(key)
 	if !ok {
@@ -399,15 +405,42 @@ func (sc *sharedCore) evaluateFlag(key string, ctx EvaluationContext, defaultVal
 		detail.Reason = ReasonError
 	}
 
-	sc.ep.enqueue(sdkEvent{
-		Type:      "Evaluation",
-		FlagKey:   key,
-		UserID:    ctx.UserID,
-		Variation: detail.Variation,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	})
-
 	return detail
+}
+
+// wireReasons maps the SDK's public reason values to the kebab-case category
+// the events endpoint expects, so the Analytics tab reads the same whichever
+// SDK reported it (#4268). The public EvaluationReason names are unchanged;
+// only the event is translated.
+var wireReasons = map[EvaluationReason]string{
+	ReasonRuleMatch:          "rule-match",
+	ReasonFallthrough:        "fallthrough",
+	ReasonFlagDisabled:       "flag-disabled",
+	ReasonFlagNotFound:       "flag-not-found",
+	ReasonPrerequisiteFailed: "prerequisite-failed",
+	ReasonError:              "error",
+}
+
+// recordEvaluation enqueues the Evaluation analytics event for one read. Each
+// public variation method calls it once, AFTER its type coercion, so a
+// type-mismatched read reports "error" rather than the evaluator's success
+// reason. RuleID rides only on a rule match: an Error read can still carry the
+// rule that selected a malformed variation, and that rule did not serve the
+// traffic.
+func (sc *sharedCore) recordEvaluation(key string, ctx EvaluationContext, detail EvaluationDetail) {
+	event := sdkEvent{
+		Type:            "Evaluation",
+		FlagKey:         key,
+		UserID:          ctx.UserID,
+		Variation:       detail.Variation,
+		Timestamp:       time.Now().UTC().Format(time.RFC3339),
+		Reason:          wireReasons[detail.Reason],
+		PrerequisiteKey: detail.PrerequisiteKey,
+	}
+	if detail.Reason == ReasonRuleMatch {
+		event.RuleID = detail.RuleID
+	}
+	sc.ep.enqueue(event)
 }
 
 // --- Factory diagnostics (test-only) ---

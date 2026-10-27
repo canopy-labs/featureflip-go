@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.11.0 — 2026-10-26
+
+### Added
+
+- The `Evaluation` analytics event now carries the evaluation reason as a kebab-case category (`rule-match`, `fallthrough`, `flag-disabled`, `prerequisite-failed`, `error` or `flag-not-found`), plus `ruleId` on a rule match and `prerequisiteKey` when a prerequisite failed. A typed accessor reading a flag of another type reports `error`. Fields that don't apply are omitted. The public API is unchanged. ([#4268](https://github.com/canopy-labs/featureflip/issues/4268))
+- A read of a flag the SDK does not hold now records an `Evaluation` event with reason `flag-not-found`, as the other server SDKs do. It previously recorded none. ([#4268](https://github.com/canopy-labs/featureflip/issues/4268))
+
 ## 2.10.0 — 2026-10-22
 
 ### Changed

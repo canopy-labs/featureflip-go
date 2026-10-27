@@ -38,6 +38,11 @@ type eventVec struct {
 	Metadata    map[string]any `json:"metadata"`
 	Expect      map[string]any `json:"expect"`
 
+	// Evaluation vectors only: the flag config the server hands out and the flag read.
+	FlagKey  string          `json:"flagKey"`
+	Flags    json.RawMessage `json:"flags"`
+	Segments json.RawMessage `json:"segments"`
+
 	// Distinguishes an ABSENT metadata key from an explicitly empty bag: both
 	// must produce the same bytes, and only the raw map can tell them apart.
 	raw map[string]json.RawMessage
@@ -66,12 +71,27 @@ var capabilities = map[string]bool{"anonymousContext": true}
 // the other tests do would defeat the purpose: `omitempty` means absence is only
 // observable in the bytes, and an absent optional is exactly what #2359 was about.
 func eventCapturingServer(t *testing.T, bodies *[]byte, mu *sync.Mutex) *httptest.Server {
+	return eventCapturingServerWithFlags(t, bodies, mu, nil, nil)
+}
+
+// As eventCapturingServer, but /v1/sdk/flags serves the vector's own flags and
+// segments (evaluation vectors need a real flag to read).
+func eventCapturingServerWithFlags(t *testing.T, bodies *[]byte, mu *sync.Mutex, flags, segments json.RawMessage) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sdk/flags":
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(getFlagsResponse{Environment: "test", Version: 1})
+			if flags == nil {
+				json.NewEncoder(w).Encode(getFlagsResponse{Environment: "test", Version: 1})
+				return
+			}
+			if segments == nil {
+				segments = json.RawMessage("[]")
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"environment": "test", "version": 1, "flags": flags, "segments": segments,
+			})
 
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/sdk/events":
 			body, _ := io.ReadAll(r.Body)
@@ -139,7 +159,7 @@ func TestGoldenEventPayload(t *testing.T) {
 		t.Run(v.ID, func(t *testing.T) {
 			var mu sync.Mutex
 			var body []byte
-			server := eventCapturingServer(t, &body, &mu)
+			server := eventCapturingServerWithFlags(t, &body, &mu, v.Flags, v.Segments)
 			defer server.Close()
 
 			client, err := Get("events-"+v.ID,
@@ -152,9 +172,13 @@ func TestGoldenEventPayload(t *testing.T) {
 			}
 
 			ctx := contextFromVector(v.Context)
-			if v.Kind == "identify" {
+			switch v.Kind {
+			case "identify":
 				client.Identify(ctx)
-			} else {
+			case "evaluation":
+				// Real client, real accessor: a test stub would bypass analytics.
+				client.BoolVariation(v.FlagKey, ctx, false)
+			default:
 				// A vector with no `metadata` key omits the argument entirely,
 				// which must put the same bytes on the wire as an empty bag.
 				var meta map[string]any
@@ -209,8 +233,8 @@ func TestGoldenEventPayload(t *testing.T) {
 	}
 
 	// A runner that silently skips everything is worse than no runner at all.
-	if executed < 10 {
-		t.Errorf("only %d event payload vectors executed, want >= 10 — did a skip rule widen?", executed)
+	if executed < 16 {
+		t.Errorf("only %d event payload vectors executed, want >= 16 — did a skip rule widen?", executed)
 	}
 }
 
