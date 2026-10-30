@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.12.0 — 2026-10-30
+
+### Fixed
+
+- A rollout whose Bucket by value is a slice, array or map (empty or not) can't be bucketed, so the rule is skipped like one with no value. It used to hash `fmt.Sprintf("%v", value)`, which put the context in a different bucket than the evaluation engine and the other SDKs. ([#4572](https://github.com/canopy-labs/featureflip/issues/4572))
+
+### Changed
+
+- A rollout with no Bucket by now defaults to `user_id`, the canonical user-identifier spelling, instead of `userId`. `EvaluationContext.UserID` is unchanged and still resolves for both spellings. A context with no typed user id whose attribute bag carries the identifier under `userId` is no longer bucketed by a rollout that names no Bucket by; set the typed user id or use `user_id`. ([#4518](https://github.com/canopy-labs/featureflip/issues/4518))
+
 ## 2.11.0 — 2026-10-26
 
 ### Added

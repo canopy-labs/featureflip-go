@@ -117,3 +117,21 @@ func TestBucketValue_JSONNumberSpellings(t *testing.T) {
 		}
 	}
 }
+
+// A non-scalar bucket value can't be bucketed (#4572), whatever Go type carries it.
+func TestBucketValue_NonScalarsCannotBucket(t *testing.T) {
+	for name, v := range map[string]any{
+		"[]any":             []any{"a", "b"},
+		"empty []any":       []any{},
+		"[]string":          []string{"a"},
+		"array":             [2]int{1, 2},
+		"map[string]any":    map[string]any{"id": "acme"},
+		"empty map":         map[string]any{},
+		"map[string]string": map[string]string{"id": "acme"},
+	} {
+		got, ok := bucketValue(EvaluationContext{Attributes: map[string]any{"groups": v}}, "groups")
+		if ok || got != "" {
+			t.Errorf("%s: bucketValue = %q, %v; want \"\", false", name, got, ok)
+		}
+	}
+}

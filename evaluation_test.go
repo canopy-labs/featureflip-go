@@ -315,7 +315,7 @@ func TestEvaluate_Rollout_DefaultBucketBy(t *testing.T) {
 	flag.Fallthrough = serveConfig{
 		Type: "Rollout",
 		Salt: "test-salt",
-		// BucketBy is empty, should default to "userId"
+		// BucketBy is empty, should default to "user_id"
 		Variations: []weightedVariation{
 			{Key: "on", Weight: 100},
 		},
@@ -326,6 +326,29 @@ func TestEvaluate_Rollout_DefaultBucketBy(t *testing.T) {
 
 	if result.Variation != "on" {
 		t.Errorf("Variation = %q, want %q", result.Variation, "on")
+	}
+}
+
+// With no typed UserID the bucket value comes from the exact-key attribute bag, so only a
+// default Bucket by of "user_id" finds this attribute (#4518); "userId" would skip the rule.
+func TestEvaluate_Rollout_DefaultBucketBy_IsUserIDSpelling(t *testing.T) {
+	if got := bucketByOf(serveConfig{}); got != "user_id" {
+		t.Fatalf("bucketByOf(serveConfig{}) = %q, want user_id", got)
+	}
+	flag := boolFlag("rollout-flag", true, "on", "off")
+	flag.Rules = []ruleDTO{{
+		ID:       "r1",
+		Priority: 0,
+		Serve: serveConfig{
+			Type:       "Rollout",
+			Salt:       "test-salt",
+			Variations: []weightedVariation{{Key: "on", Weight: 100}},
+		},
+	}}
+	ctx := EvaluationContext{Attributes: map[string]any{"user_id": "x"}}
+	result := evaluate(flag, ctx, nil, nil)
+	if result.Variation != "on" || result.RuleID != "r1" {
+		t.Errorf("got variation %q rule %q, want on/r1", result.Variation, result.RuleID)
 	}
 }
 

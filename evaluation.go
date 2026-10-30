@@ -162,10 +162,10 @@ func evaluateInternal(flag flagDTO, ctx EvaluationContext, segments map[string]s
 	return result
 }
 
-// bucketByOf returns the attribute a serve buckets on, defaulting to userId.
+// bucketByOf returns the attribute a serve buckets on, defaulting to user_id.
 func bucketByOf(serve serveConfig) string {
 	if serve.BucketBy == "" {
-		return "userId"
+		return "user_id"
 	}
 	return serve.BucketBy
 }

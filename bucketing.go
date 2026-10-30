@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -19,7 +20,8 @@ func bucket(salt, value string) int {
 }
 
 // bucketValue returns the text a rollout hashes for the bucketBy attribute, or
-// ok=false when the context has no value to bucket on (#4236). It differs from
+// ok=false when the context has no value to bucket on (#4236) or the value is a
+// slice, array or map (#4572). It differs from
 // getAttributeValue, which conditions share and which must not change, in two
 // ways: floating-point values are spelled by canonicalNumber, and the built-in
 // userId/user_id aliases fall back to an attribute of that exact name when
@@ -54,6 +56,15 @@ func bucketValue(ctx EvaluationContext, attr string) (string, bool) {
 			return canonicalNumber(f, 64), true
 		}
 		return n.String(), true
+	}
+	// A list or map (a JSON array or object, empty or not) has no spelling every SDK
+	// shares, so it can't be bucketed and the rollout is skipped, like a missing
+	// value (#4572).
+	if v != nil {
+		switch reflect.TypeOf(v).Kind() {
+		case reflect.Slice, reflect.Array, reflect.Map:
+			return "", false
+		}
 	}
 	return fmt.Sprintf("%v", v), true
 }

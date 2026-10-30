@@ -51,8 +51,9 @@ type goldenConditionVec struct {
 
 // goldenFlagVec is the per-entry shape inside flagVectors.
 type goldenFlagVec struct {
-	ID      string `json:"id"`
-	FlagKey string `json:"flagKey"`
+	ID       string   `json:"id"`
+	FlagKey  string   `json:"flagKey"`
+	Requires []string `json:"requires"`
 	// flags and segments are arrays on the wire; we index them into maps.
 	Flags    []flagDTO    `json:"flags"`
 	Segments []segmentDTO `json:"segments"`
@@ -210,6 +211,8 @@ func runConditionVectors(t *testing.T, vectors []goldenConditionVec) {
 // flag vectors, checking variation, value, and normalized reason.
 func TestGoldenFlags(t *testing.T) {
 	g := loadGolden(t)
+	executed, skipped := 0, 0
+	seen := map[string]bool{}
 	for _, raw := range g.FlagVectors {
 		var v goldenFlagVec
 		// json.Number, as the SDK parses a config: float64 cannot hold 1e400.
@@ -218,6 +221,16 @@ func TestGoldenFlags(t *testing.T) {
 		if err := dec.Decode(&v); err != nil {
 			t.Fatalf("parse flagVector: %v", err)
 		}
+
+		// go takes a typed context, so it skips mapContext: the spelling a caller used for
+		// the identity is not observable, and mapping user_id ?? userId into UserID here
+		// would test the runner's own mapping. exactCaseIdentity is supported.
+		if goldenRequiresUnsupported(v.Requires) {
+			skipped++
+			continue
+		}
+		executed++
+		seen[v.ID] = true
 
 		// Index flags and segments into maps keyed by their key fields.
 		flagMap := make(map[string]flagDTO, len(v.Flags))
@@ -275,4 +288,25 @@ func TestGoldenFlags(t *testing.T) {
 			t.Errorf("[%s] reason.prerequisiteKey = %q, want %q", v.ID, r.PrerequisiteKey, v.Expected.Reason.PrerequisiteKey)
 		}
 	}
+
+	// A runner that quietly skipped everything would pass for the wrong reason: only the
+	// 11 wireContext (mapContext) vectors may be skipped.
+	if skipped != 11 {
+		t.Errorf("skipped %d flag vectors, want 11 (requires mapContext)", skipped)
+	}
+	if !seen["f-identity-casing-UserId"] {
+		t.Error("f-identity-casing-UserId must execute: go matches identity case-sensitively")
+	}
+	if executed < 59 {
+		t.Errorf("executed %d flag vectors, want at least 59", executed)
+	}
+}
+
+func goldenRequiresUnsupported(requires []string) bool {
+	for _, token := range requires {
+		if token != "exactCaseIdentity" {
+			return true
+		}
+	}
+	return false
 }
