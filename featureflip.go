@@ -69,6 +69,9 @@ func Get(sdkKey string, opts ...Option) (*Client, error) {
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	if cfg.optionErr != nil {
+		return nil, cfg.optionErr
+	}
 
 	// Retry loop: handles the race where a cached core is found but has
 	// already begun shutting down (refcount hit 0 between lookup and
@@ -289,12 +292,29 @@ func (c *Client) Flush() {
 	c.core.ep.flush()
 }
 
-// Initialized returns true if the client successfully completed initialization.
+// Initialized returns true for any client [Get] returned, and false once this
+// handle is closed. It does not mean flag data loaded: a failed or timed-out
+// initial fetch still gives an initialized client that serves caller defaults
+// while the data source keeps retrying. Use [Client.StartupInfo] to see where the
+// data came from.
 func (c *Client) Initialized() bool {
 	if c.isClosed() {
 		return false
 	}
 	return c.core.initialized
+}
+
+// StartupInfo reports where the client's flag data came from at startup: live,
+// a stored snapshot, or none (caller defaults). With a snapshot store configured,
+// Reason says why a snapshot was used or ignored. Once the first full live sync
+// lands after a snapshot or none start, the info moves to live and the reason and
+// age are cleared.
+//
+// Because [Get] blocks until startup finishes, a listener registered with
+// [Client.OnUpdate] cannot observe the load of a snapshot itself. It does fire
+// for the difference when live data later replaces the snapshot.
+func (c *Client) StartupInfo() StartupInfo {
+	return c.core.snap.startup()
 }
 
 // Close decrements the refcount on the shared core. When the last handle for

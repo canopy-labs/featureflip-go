@@ -112,3 +112,46 @@ func TestStreaming_FlagDeltaWithKnownServeTypeIsApplied(t *testing.T) {
 			got.Version, got.Fallthrough.Type, "Rollout")
 	}
 }
+
+// The INITIAL live fetch must drop unevaluable entities exactly as poll, SSE sync and
+// segment refetch do (#5149). Without the drop, a flag with an unknown serve type or
+// condition logic is installed and takes the evaluator's ELSE arm — fail-open.
+func TestInitialFetch_DropsUnevaluableEntities(t *testing.T) {
+	flags := []flagDTO{
+		boolFlag("good", true, "true", "false"),
+		{Key: "bad-serve", Enabled: true, Fallthrough: serveConfig{Type: "Xor"}},
+		{Key: "bad-group", Enabled: true, Fallthrough: serveConfig{Type: "Fixed"}, Rules: []ruleDTO{{
+			ID: "r1", Serve: serveConfig{Type: "Fixed"}, ConditionGroups: []conditionGroup{{Operator: "Xor"}},
+		}}},
+	}
+	segments := []segmentDTO{
+		{Key: "ok-seg", ConditionLogic: "And"},
+		{Key: "bad-seg", ConditionLogic: "Xor"},
+	}
+	server := flagServer(flags, segments)
+	defer server.Close()
+
+	cfg := defaultConfig()
+	cfg.baseURL = server.URL
+	cfg.streaming = false
+	sc := newSharedCore("initial-drop-key", cfg)
+	if err := sc.initializeOnce(); err != nil {
+		t.Fatalf("initializeOnce: %v", err)
+	}
+	t.Cleanup(func() { sc.shutdown() })
+
+	if _, ok := sc.store.getFlag("good"); !ok {
+		t.Error("evaluable flag was dropped")
+	}
+	for _, k := range []string{"bad-serve", "bad-group"} {
+		if _, ok := sc.store.getFlag(k); ok {
+			t.Errorf("unevaluable flag %q was applied by the initial fetch", k)
+		}
+	}
+	if _, ok := sc.store.getSegment("ok-seg"); !ok {
+		t.Error("evaluable segment was dropped")
+	}
+	if _, ok := sc.store.getSegment("bad-seg"); ok {
+		t.Error("unevaluable segment was applied by the initial fetch")
+	}
+}

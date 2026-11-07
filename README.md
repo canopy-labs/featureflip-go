@@ -53,6 +53,16 @@ client, err := featureflip.Get("your-sdk-key",
 
 The SDK key can also be set via the `FEATUREFLIP_SDK_KEY` environment variable.
 
+To let a new process start from its last known configuration while the Evaluation API is unreachable, pass a snapshot store. It is off by default. See [Starting during an outage](https://featureflip.io/docs/sdks/go/#starting-during-an-outage).
+
+```go
+client, err := featureflip.Get("your-sdk-key",
+	featureflip.WithSnapshotStore(featureflip.NewFileSnapshotStore("/var/lib/featureflip/snapshot.json")),
+	featureflip.WithMaxSnapshotAge(6 * time.Hour), // default 24h, whole seconds
+)
+// client.StartupInfo() reports source "live", "snapshot" or "none".
+```
+
 ## Evaluation
 
 ```go

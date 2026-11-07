@@ -136,3 +136,48 @@ func TestPolling_HandlesServerErrors(t *testing.T) {
 		t.Error("flag-1 should be in the store after recovery from server error")
 	}
 }
+
+func TestPolling_InFlightPollDoesNotWriteAfterStop(t *testing.T) {
+	// stop() must be a barrier: a poll whose request is already in flight when
+	// the poller is stopped must not apply its response afterwards. The
+	// streaming fallback reaps its poller the moment the recovered stream
+	// delivers, then the stream owns the store, so a late whole-store replace
+	// would revert what the stream applied (#3075's flapping, reached through
+	// the in-flight request rather than the ticker).
+	requested := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requested)
+		<-release
+		resp := getFlagsResponse{
+			Environment: "test",
+			Version:     1,
+			Flags:       []flagDTO{{Key: "poll-flag", Version: 1, Enabled: true, Type: "Boolean"}},
+			Segments:    []segmentDTO{},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cfg := defaultConfig()
+	cfg.baseURL = server.URL
+	hc := newHTTPClient("sdk-key", cfg)
+	s := newStore()
+
+	ps := newPollSource(hc, s, time.Hour, nil)
+	done := make(chan struct{})
+	go func() {
+		ps.poll()
+		close(done)
+	}()
+
+	<-requested
+	ps.stop()
+	close(release)
+	<-done
+
+	if _, ok := s.getFlag("poll-flag"); ok {
+		t.Error("a poll in flight at stop() wrote to the store after the poller was stopped")
+	}
+}

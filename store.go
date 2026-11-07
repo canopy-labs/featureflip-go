@@ -2,6 +2,7 @@ package featureflip
 
 import (
 	"reflect"
+	"sort"
 	"sync"
 )
 
@@ -93,6 +94,22 @@ func (s *store) flagsSliceLocked() []flagDTO {
 		flags = append(flags, flag)
 	}
 	return flags
+}
+
+// sortedSnapshot returns copies of all flags and segments sorted by key. Map
+// iteration order is random, and the snapshot writer compares serialized states
+// byte for byte, so the order must be deterministic.
+func (s *store) sortedSnapshot() ([]flagDTO, []segmentDTO) {
+	s.mu.RLock()
+	flags := s.flagsSliceLocked()
+	segments := make([]segmentDTO, 0, len(s.segments))
+	for _, seg := range s.segments {
+		segments = append(segments, seg)
+	}
+	s.mu.RUnlock()
+	sort.Slice(flags, func(i, j int) bool { return flags[i].Key < flags[j].Key })
+	sort.Slice(segments, func(i, j int) bool { return segments[i].Key < segments[j].Key })
+	return flags, segments
 }
 
 // getFlag retrieves a flag by key. Returns the flag and true if found,

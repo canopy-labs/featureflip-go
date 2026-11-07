@@ -46,8 +46,9 @@ type streamSource struct {
 	maxReconnectDelay time.Duration // backoff ceiling
 	fallbackThreshold int           // consecutive failures before polling fallback (Task 4)
 	connectTimeout    time.Duration
-	fallbackMu        sync.Mutex  // guards fallbackPoll (run()'s goroutine vs. stop() racing concurrently)
-	fallbackPoll      *pollSource // active polling fallback, nil when none (Task 4)
+	fallbackMu        sync.Mutex       // guards fallbackPoll (run()'s goroutine vs. stop() racing concurrently)
+	fallbackPoll      *pollSource      // active polling fallback, nil when none (Task 4)
+	snap              *snapshotManager // snapshot writer, set before run; nil-safe
 }
 
 // newStreamSource creates a new SSE stream source.
@@ -259,6 +260,9 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 			return
 		}
 		changed := ss.store.setFlag(*flag)
+		if len(changed) > 0 {
+			ss.snap.deltaApplied()
+		}
 		if len(changed) > 0 && ss.onUpdate != nil {
 			ss.onUpdate(changed)
 		}
@@ -273,6 +277,9 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 			return
 		}
 		changed := ss.store.removeFlag(evt.Key)
+		if len(changed) > 0 {
+			ss.snap.deltaApplied()
+		}
 		if len(changed) > 0 && ss.onUpdate != nil {
 			ss.onUpdate(changed)
 		}
@@ -288,9 +295,15 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 			return
 		}
 		changed := ss.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))
+		ss.snap.fullApplied()
 		if len(changed) > 0 && ss.onUpdate != nil {
 			ss.onUpdate(changed)
 		}
+
+	case "ping":
+		// The server's keep-alive: the stream is live and healthy. Lets a live
+		// client refresh an unchanged snapshot's age.
+		ss.snap.ping()
 
 	case "sync":
 		// Full config snapshot sent by the server on (re)connect. Replace the
@@ -312,6 +325,7 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 			return
 		}
 		changed := ss.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))
+		ss.snap.fullApplied()
 		if len(changed) > 0 && ss.onUpdate != nil {
 			ss.onUpdate(changed)
 		}
@@ -332,6 +346,7 @@ func (ss *streamSource) startFallbackPolling() {
 	}
 	// Poll at the base reconnect interval (tests use sub-second; prod ~3s).
 	ps := newPollSource(ss.hc, ss.store, ss.reconnectDelay, ss.onUpdate)
+	ps.snap = ss.snap
 	go ps.run()
 	ss.fallbackPoll = ps
 }

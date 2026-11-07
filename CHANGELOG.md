@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.13.0 — 2026-11-07
+
+### Added
+
+- Opt-in snapshot store: with `WithSnapshotStore` set, the SDK saves the flag configuration as it receives it, and a later start that can't reach the Evaluation API loads the saved copy instead of serving defaults. A built-in `FileSnapshotStore` writes it to a local file, and you can implement the store interface to share one snapshot through something like Redis. A snapshot older than `WithMaxSnapshotAge` (24 hours by default) is ignored. `client.StartupInfo()` reports whether the client started from the live API, a snapshot, or neither. Off unless you set it. ([#4652](https://github.com/canopy-labs/featureflip/issues/4652))
+
+### Fixed
+
+- The initial fetch now drops flags and segments the evaluator can't handle (an unknown serve type, group operator or segment logic), as polling and streaming already did. Before, such a flag could be served from the initial fetch. ([#5149](https://github.com/canopy-labs/featureflip/issues/5149))
+- A fallback poll whose request was in flight when the recovered stream retired the poller no longer replaces the store afterwards. It could revert the configuration the stream had just applied until the next stream event. Stopping a poller now waits for an in-progress write and discards any later response.
+
 ## 2.12.0 — 2026-10-30
 
 ### Fixed

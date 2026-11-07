@@ -3,6 +3,7 @@ package featureflip
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,12 @@ type pollSource struct {
 	onUpdate func(keys []string)
 	ctx      context.Context
 	cancel   context.CancelFunc
+	// snap is set by the owning core before run starts; nil-safe.
+	snap *snapshotManager
+	// applyMu makes stop() a barrier: stop cancels under it and poll re-checks
+	// the context under it before writing, so a request already in flight at
+	// stop() is discarded instead of replacing the store afterwards.
+	applyMu sync.Mutex
 }
 
 // newPollSource creates a new polling data source.
@@ -70,13 +77,26 @@ func (ps *pollSource) poll() {
 		}
 		return
 	}
+	ps.applyMu.Lock()
+	if ps.ctx.Err() != nil {
+		// Stopped while the request was in flight. The streaming fallback reaps
+		// its poller once the recovered stream delivers, and from then on the
+		// stream owns the store, so a late whole-store replace would revert it.
+		ps.applyMu.Unlock()
+		return
+	}
 	changed := ps.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))
+	ps.snap.fullApplied()
+	ps.applyMu.Unlock()
 	if len(changed) > 0 && ps.onUpdate != nil {
 		ps.onUpdate(changed)
 	}
 }
 
-// stop cancels the polling loop.
+// stop cancels the polling loop. Once it returns, no poll writes to the store,
+// including one whose request was already in flight.
 func (ps *pollSource) stop() {
+	ps.applyMu.Lock()
+	defer ps.applyMu.Unlock()
 	ps.cancel()
 }

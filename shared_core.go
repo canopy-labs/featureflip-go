@@ -2,6 +2,7 @@ package featureflip
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,7 @@ type sharedCore struct {
 	initErr     error
 	stopStream  func()
 	stopPoll    func()
+	snap        *snapshotManager
 
 	// inspectors is written once in newSharedCore, before the core is published
 	// to any other goroutine, and is never mutated afterwards — so the
@@ -51,10 +53,12 @@ type sharedCore struct {
 // Client.Initialized or implicitly by the factory.
 func newSharedCore(sdkKey string, cfg config) *sharedCore {
 	hc := newHTTPClient(sdkKey, cfg)
+	st := newStore()
 	return &sharedCore{
 		cfg:    cfg,
 		sdkKey: sdkKey,
-		store:  newStore(),
+		store:  st,
+		snap:   newSnapshotManager(cfg, sdkKey, st),
 		hc:     hc,
 		ep:     newEventProcessor(hc, cfg.flushBatchSize, cfg.flushInterval),
 		// Copied + nil-filtered here so the config slice the caller still holds
@@ -83,6 +87,9 @@ func (sc *sharedCore) doInit() error {
 		resp *getFlagsResponse
 		err  error
 	}
+	// cause names why the fetch did not produce data, for the snapshot fallback's
+	// log line. Empty when it did.
+	cause := ""
 	ch := make(chan fetchResult, 1)
 	go func() {
 		resp, err := sc.hc.getFlags()
@@ -101,11 +108,29 @@ func (sc *sharedCore) doInit() error {
 			// Client, and Get does not return until this has already run — but
 			// it states the contract at the one site that would otherwise be
 			// free to break it.
-			_ = sc.store.setAll(result.resp.Flags, result.resp.Segments)
+			_ = sc.store.setAll(dropUnevaluable(result.resp.Flags, result.resp.Segments))
+			sc.snap.fullApplied()
+		} else {
+			// On error: leave the store empty; the data source populates it on
+			// recovery.
+			cause = result.err.Error()
 		}
-		// On error: leave the store empty; the data source populates it on recovery.
 	case <-ctx.Done():
 		// Initial fetch timed out; proceed — the data source keeps trying.
+		cause = fmt.Sprintf("timed out after %s", sc.cfg.initTimeout)
+	}
+
+	// Read the snapshot store only after a failed or timed-out fetch. Loading a
+	// snapshot never writes and fires no listeners, and the data source below
+	// still starts, so the first live apply replaces it.
+	if cause != "" {
+		if sc.snap == nil || sc.snap.store == nil {
+			// No store to fall back on. The data source below keeps retrying, but
+			// say why this client is serving defaults: a revoked key and an
+			// unreachable host look identical otherwise.
+			log.Printf("[featureflip] initial fetch failed (%s), serving defaults until the data source connects", cause)
+		}
+		sc.snap.loadFallback(cause, sc.cfg.initTimeout)
 	}
 
 	// Start event processor + data source UNCONDITIONALLY so a cold start during
@@ -113,11 +138,13 @@ func (sc *sharedCore) doInit() error {
 	sc.ep.start()
 	if sc.cfg.streaming {
 		ss := newStreamSource(sc.hc, sc.store, sc.notifyUpdateListeners)
+		ss.snap = sc.snap
 		ss.connectTimeout = sc.cfg.connectTimeout
 		go ss.run()
 		sc.stopStream = ss.stop
 	} else {
 		ps := newPollSource(sc.hc, sc.store, sc.cfg.pollInterval, sc.notifyUpdateListeners)
+		ps.snap = sc.snap
 		go ps.run()
 		sc.stopPoll = ps.stop
 	}
@@ -167,7 +194,12 @@ func (sc *sharedCore) release() {
 }
 
 func (sc *sharedCore) shutdown() {
-	// Remove from factory map first.
+	// Close the snapshot writer FIRST: a poll or stream apply still in flight when
+	// the data sources are stopped below must not start a new write. A write
+	// already in flight is neither waited for nor cancelled.
+	sc.snap.close()
+
+	// Remove from factory map.
 	if sc.owningMu != nil && sc.owningMap != nil {
 		sc.owningMu.Lock()
 		if sc.owningMap[sc.owningKey] == sc {
@@ -183,7 +215,6 @@ func (sc *sharedCore) shutdown() {
 		sc.stopPoll()
 	}
 	sc.ep.stop()
-
 	// Drop every subscription. The data sources are stopped above, so nothing
 	// should fire after this, but a listener held here would also pin whatever
 	// the caller's closure captured for the lifetime of the process.
@@ -269,5 +300,22 @@ func configsEqual(a, b config) bool {
 		a.flushBatchSize == b.flushBatchSize &&
 		a.initTimeout == b.initTimeout &&
 		a.connectTimeout == b.connectTimeout &&
-		a.readTimeout == b.readTimeout
+		a.readTimeout == b.readTimeout &&
+		// The snapshot options are compared only when the later Get passes them. An
+		// omitted option is not "different": a wrapper that never sets a store
+		// would otherwise warn on every Get against a core that has one.
+		(b.snapshotStore == nil || sameSnapshotStore(a.snapshotStore, b.snapshotStore)) &&
+		(b.maxSnapshotAge == 0 || a.effectiveMaxSnapshotAge() == b.maxSnapshotAge)
+}
+
+// sameSnapshotStore compares stores by identity. A store whose dynamic type is not
+// comparable (a struct holding a slice, passed by value) can never be proven
+// identical, so it counts as different.
+func sameSnapshotStore(a, b SnapshotStore) (same bool) {
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	return a == b
 }
