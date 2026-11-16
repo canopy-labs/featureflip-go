@@ -2,7 +2,6 @@ package featureflip
 
 import (
 	"fmt"
-	"log"
 )
 
 // Entity-level drop for enum values this SDK build cannot evaluate (#2402).
@@ -104,7 +103,7 @@ func dropUnevaluable(flags []flagDTO, segments []segmentDTO) ([]flagDTO, []segme
 	keptFlags := make([]flagDTO, 0, len(flags))
 	for _, f := range flags {
 		if reason := unevaluableFlagReason(f); reason != "" {
-			log.Printf("[featureflip] dropping flag %q: %s. This SDK version may be older "+
+			logf("[featureflip] dropping flag %q: %s. This SDK version may be older "+
 				"than the flag configuration; the rest of the configuration was applied.", f.Key, reason)
 			continue
 		}
@@ -114,7 +113,7 @@ func dropUnevaluable(flags []flagDTO, segments []segmentDTO) ([]flagDTO, []segme
 	keptSegments := make([]segmentDTO, 0, len(segments))
 	for _, s := range segments {
 		if reason := unevaluableSegmentReason(s); reason != "" {
-			log.Printf("[featureflip] dropping segment %q: %s. This SDK version may be older "+
+			logf("[featureflip] dropping segment %q: %s. This SDK version may be older "+
 				"than the flag configuration; the rest of the configuration was applied.", s.Key, reason)
 			continue
 		}

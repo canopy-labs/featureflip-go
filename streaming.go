@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -233,7 +232,7 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 	case "flag.created", "flag.updated":
 		var evt streamEvent
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
-			log.Printf("[featureflip] discarding malformed %s event: %v", eventType, err)
+			logf("[featureflip] discarding malformed %s event: %v", eventType, err)
 			return
 		}
 		if evt.Key == "" {
@@ -245,7 +244,7 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 			// retried by the next event or the fallback poller. See
 			// isMalformedPayload.
 			if isMalformedPayload(err) {
-				log.Printf("[featureflip] discarding malformed flag payload for %q: %v", evt.Key, err)
+				logf("[featureflip] discarding malformed flag payload for %q: %v", evt.Key, err)
 			}
 			return
 		}
@@ -255,7 +254,7 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 		// outcome the drop exists to prevent, and FlagNotFound is the honest answer if
 		// there was no previous copy.
 		if reason := unevaluableFlagReason(*flag); reason != "" {
-			log.Printf("[featureflip] dropping flag delta for %q: %s. This SDK version "+
+			logf("[featureflip] dropping flag delta for %q: %s. This SDK version "+
 				"may be older than the flag configuration.", evt.Key, reason)
 			return
 		}
@@ -270,7 +269,7 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 	case "flag.deleted":
 		var evt streamEvent
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
-			log.Printf("[featureflip] discarding malformed flag.deleted event: %v", err)
+			logf("[featureflip] discarding malformed flag.deleted event: %v", err)
 			return
 		}
 		if evt.Key == "" {
@@ -290,7 +289,7 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 			// Same fetch, same split, same reasoning as pollSource.poll():
 			// a malformed refetch will not fix itself on the next event.
 			if isMalformedPayload(err) {
-				log.Printf("[featureflip] discarding malformed flags payload: %v", err)
+				logf("[featureflip] discarding malformed flags payload: %v", err)
 			}
 			return
 		}
@@ -321,7 +320,7 @@ func (ss *streamSource) handleEvent(eventType, data string) {
 			// Log it: a dropped snapshot means reconnect resync is not happening,
 			// and staying silent is how the server-side bug that produced these
 			// frames (#2279) went unnoticed for so long.
-			log.Printf("[featureflip] discarding malformed sync snapshot: %v", err)
+			logf("[featureflip] discarding malformed sync snapshot: %v", err)
 			return
 		}
 		changed := ss.store.setAll(dropUnevaluable(resp.Flags, resp.Segments))

@@ -2,7 +2,6 @@ package featureflip
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
 )
@@ -73,7 +72,7 @@ func (ps *pollSource) poll() {
 		// about that is how the enums-as-integers server bug went unnoticed for
 		// so long (#2279); the streaming path already says so in its own words.
 		if isMalformedPayload(err) {
-			log.Printf("[featureflip] discarding malformed flags payload: %v", err)
+			logf("[featureflip] discarding malformed flags payload: %v", err)
 		}
 		return
 	}

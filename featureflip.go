@@ -17,7 +17,6 @@ package featureflip
 
 import (
 	"errors"
-	"log"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -84,7 +83,7 @@ func Get(sdkKey string, opts ...Option) (*Client, error) {
 		if ok {
 			if existing.tryAcquire() {
 				if !configsEqual(existing.cfg, cfg) {
-					log.Printf("[featureflip] Get called with different options for SDK key already in use. The cached instance's options are preserved; the passed options are ignored.")
+					logf("[featureflip] Get called with different options for SDK key already in use. The cached instance's options are preserved; the passed options are ignored.")
 				}
 				return &Client{core: existing}, nil
 			}

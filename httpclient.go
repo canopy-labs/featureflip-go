@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,7 +16,7 @@ import (
 // sdkVersion is reported in the User-Agent. Go modules carry no manifest — the
 // git tag is the version — so this is maintained by hand and pinned to
 // CHANGELOG.md by tools/check-sdk-versions. Bump both together.
-const sdkVersion = "2.13.0"
+const sdkVersion = "2.13.1"
 
 // productToken matches an RFC 9110 product-token: one or more tchars.
 var productToken = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
@@ -33,7 +32,7 @@ func userAgent(cfg config) string {
 	}
 	if !productToken.MatchString(cfg.wrapperName) ||
 		(cfg.wrapperVersion != "" && !productToken.MatchString(cfg.wrapperVersion)) {
-		log.Printf("[featureflip] ignoring wrapper %q/%q: not a valid User-Agent product token",
+		logf("[featureflip] ignoring wrapper %q/%q: not a valid User-Agent product token",
 			cfg.wrapperName, cfg.wrapperVersion)
 		return ua
 	}

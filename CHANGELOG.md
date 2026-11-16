@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.13.1 — 2026-11-16
+
+### Security
+
+- The SDK key is now redacted from every log line the SDK emits, including error messages from the HTTP stack that quote the `Authorization` header. A key shorter than 20 characters is not a Featureflip key and is left alone. ([#5167](https://github.com/canopy-labs/featureflip/issues/5167), [#5166](https://github.com/canopy-labs/featureflip/issues/5166))
+
 ## 2.13.0 — 2026-11-07
 
 ### Added

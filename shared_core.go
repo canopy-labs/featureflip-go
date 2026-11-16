@@ -3,7 +3,6 @@ package featureflip
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 )
@@ -52,6 +51,7 @@ type sharedCore struct {
 // calls). Initialization is deferred to initializeOnce, which is called by
 // Client.Initialized or implicitly by the factory.
 func newSharedCore(sdkKey string, cfg config) *sharedCore {
+	registerRedactedKey(sdkKey)
 	hc := newHTTPClient(sdkKey, cfg)
 	st := newStore()
 	return &sharedCore{
@@ -128,7 +128,7 @@ func (sc *sharedCore) doInit() error {
 			// No store to fall back on. The data source below keeps retrying, but
 			// say why this client is serving defaults: a revoked key and an
 			// unreachable host look identical otherwise.
-			log.Printf("[featureflip] initial fetch failed (%s), serving defaults until the data source connects", cause)
+			logf("[featureflip] initial fetch failed (%s), serving defaults until the data source connects", cause)
 		}
 		sc.snap.loadFallback(cause, sc.cfg.initTimeout)
 	}
@@ -269,7 +269,7 @@ func (sc *sharedCore) notifyUpdateListeners(keys []string) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("[featureflip] flag-update listener panicked: %v", r)
+					logf("[featureflip] flag-update listener panicked: %v", r)
 				}
 			}()
 			// Each listener gets its own copy, so one that sorts or truncates

@@ -1,7 +1,6 @@
 package featureflip
 
 import (
-	"log"
 	"sync"
 	"time"
 )
@@ -131,7 +130,7 @@ func (ep *eventProcessor) enqueue(event sdkEvent) {
 	ep.mu.Unlock()
 
 	if dropped > 0 {
-		log.Printf("[featureflip] event buffer is full; dropped %d of the oldest analytics event(s)", dropped)
+		logf("[featureflip] event buffer is full; dropped %d of the oldest analytics event(s)", dropped)
 	}
 
 	if shouldFlush {
@@ -230,14 +229,14 @@ func (ep *eventProcessor) drain() {
 			ep.mu.Unlock()
 
 		case !isRetryableSendFailure(err):
-			log.Printf("[featureflip] dropping %d analytics event(s) the events endpoint rejected permanently: %v", len(events), err)
+			logf("[featureflip] dropping %d analytics event(s) the events endpoint rejected permanently: %v", len(events), err)
 			// Dropped rather than re-queued, so the buffer shrinks and the loop
 			// still terminates — carry on to the next batch rather than letting
 			// one poison batch block the backlog queued behind it.
 
 		default:
 			dropped := ep.requeue(events)
-			log.Printf("[featureflip] failed to flush %d analytics event(s); re-queued for the next flush (%d dropped to stay within the buffer bound): %v",
+			logf("[featureflip] failed to flush %d analytics event(s); re-queued for the next flush (%d dropped to stay within the buffer bound): %v",
 				len(events), dropped, err)
 			// Stop here. The batch is back at the head of the buffer this loop
 			// is draining, so continuing would re-send it at once and spin for

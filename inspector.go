@@ -1,7 +1,6 @@
 package featureflip
 
 import (
-	"log"
 	"time"
 )
 
@@ -133,7 +132,7 @@ func (sc *sharedCore) notifyInspectors(flagKey string, ctx EvaluationContext, de
 func invokeInspector(inspector EvaluationInspector, event EvaluationEvent) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[featureflip] evaluation inspector panicked: %v", r)
+			logf("[featureflip] evaluation inspector panicked: %v", r)
 		}
 	}()
 	inspector(event)

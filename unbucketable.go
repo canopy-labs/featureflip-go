@@ -1,7 +1,6 @@
 package featureflip
 
 import (
-	"log"
 	"sync"
 )
 
@@ -33,5 +32,5 @@ func warnUnbucketable(flagKey, ruleID, bucketBy string) {
 	unbucketableSeen[key] = struct{}{}
 	unbucketableMu.Unlock()
 
-	log.Printf("[featureflip] Skipped the percentage rollout in flag %q (%s): the context has no value for %q. Pass a stable id in that attribute to include this context in the rollout.", flagKey, where, bucketBy)
+	logf("[featureflip] Skipped the percentage rollout in flag %q (%s): the context has no value for %q. Pass a stable id in that attribute to include this context in the rollout.", flagKey, where, bucketBy)
 }

@@ -2,7 +2,6 @@ package featureflip
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 )
@@ -91,7 +90,7 @@ func (m *snapshotManager) fullApplied() {
 	}
 	data, err := m.serializeState()
 	if err != nil {
-		log.Printf("[featureflip] snapshot not written: could not serialize flag state: %v", err)
+		logf("[featureflip] snapshot not written: could not serialize flag state: %v", err)
 		return
 	}
 	m.mu.Lock()
@@ -195,12 +194,12 @@ func (m *snapshotManager) writeLoop() {
 func (m *snapshotManager) writeOnce(start time.Time) {
 	data, err := m.serializeState()
 	if err != nil {
-		log.Printf("[featureflip] snapshot not written: could not serialize flag state: %v", err)
+		logf("[featureflip] snapshot not written: could not serialize flag state: %v", err)
 		return
 	}
 	text, err := encodeSnapshotEnvelope(m.keyHash, start.UnixMilli(), data)
 	if err != nil {
-		log.Printf("[featureflip] snapshot not written: could not encode envelope: %v", err)
+		logf("[featureflip] snapshot not written: could not encode envelope: %v", err)
 		return
 	}
 	m.mu.Lock()
@@ -220,12 +219,12 @@ func (m *snapshotManager) writeOnce(start time.Time) {
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[featureflip] snapshot store Put panicked, write dropped: %v", r)
+			logf("[featureflip] snapshot store Put panicked, write dropped: %v", r)
 			forget()
 		}
 	}()
 	if err := m.store.Put(text); err != nil {
-		log.Printf("[featureflip] snapshot store Put failed, write dropped: %v", err)
+		logf("[featureflip] snapshot store Put failed, write dropped: %v", err)
 		forget()
 	}
 }
@@ -270,15 +269,15 @@ func (m *snapshotManager) loadFallback(cause string, timeout time.Duration) {
 	if m == nil || m.store == nil {
 		return
 	}
-	log.Printf("[featureflip] initial fetch failed (%s), trying the snapshot store", cause)
+	logf("[featureflip] initial fetch failed (%s), trying the snapshot store", cause)
 
 	r, ok := m.readStore(timeout)
 	if !ok {
-		log.Printf("[featureflip] snapshot store Get did not return within %s, serving defaults", timeout)
+		logf("[featureflip] snapshot store Get did not return within %s, serving defaults", timeout)
 		return
 	}
 	if r.err != nil {
-		log.Printf("[featureflip] snapshot store Get failed, treating as a miss: %v", r.err)
+		logf("[featureflip] snapshot store Get failed, treating as a miss: %v", r.err)
 		return
 	}
 	if !r.found {
@@ -289,7 +288,7 @@ func (m *snapshotManager) loadFallback(cause string, timeout time.Duration) {
 	decoded, err := decodeSnapshotEnvelope(r.text, m.keyHash, now)
 	if err != nil {
 		m.setInfo(StartupInfo{Source: StartupNone, Reason: SnapshotReasonInvalid})
-		log.Printf("[featureflip] ignoring stored snapshot (%s): %v", SnapshotReasonInvalid, err)
+		logf("[featureflip] ignoring stored snapshot (%s): %v", SnapshotReasonInvalid, err)
 		return
 	}
 	ageMs := now.UnixMilli() - decoded.fetchedAtMs
@@ -299,7 +298,7 @@ func (m *snapshotManager) loadFallback(cause string, timeout time.Duration) {
 	ageSeconds := ageMs / 1000
 	if ageMs > m.maxAgeSeconds*1000 {
 		m.setInfo(StartupInfo{Source: StartupNone, Reason: SnapshotReasonExpired, AgeSeconds: ageSeconds})
-		log.Printf("[featureflip] ignoring stored snapshot (%s): it is %ds old and the maximum is %ds",
+		logf("[featureflip] ignoring stored snapshot (%s): it is %ds old and the maximum is %ds",
 			SnapshotReasonExpired, ageSeconds, m.maxAgeSeconds)
 		return
 	}
@@ -309,7 +308,7 @@ func (m *snapshotManager) loadFallback(cause string, timeout time.Duration) {
 	// snapshot is the baseline and fires no listeners.
 	m.state.setAll(dropUnevaluable(decoded.resp.Flags, decoded.resp.Segments))
 	m.setInfo(StartupInfo{Source: StartupSnapshot, Reason: SnapshotReasonSnapshot, AgeSeconds: ageSeconds})
-	log.Printf("[featureflip] started from a stored snapshot that is %ds old; the live connection keeps retrying", ageSeconds)
+	logf("[featureflip] started from a stored snapshot that is %ds old; the live connection keeps retrying", ageSeconds)
 }
 
 func (m *snapshotManager) setInfo(info StartupInfo) {
